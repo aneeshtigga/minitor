@@ -61,7 +61,7 @@ const CATALOG_ID = 'minitor-cache';
 const MANIFEST = {
   id: 'org.minitor.local',
   version: '0.3.0',
-  name: 'minitor (local cache)',
+  name: 'Minitor',
   description: 'Searches torrents via your qBittorrent plugins, caches them locally, and streams with seeking.',
   resources: ['catalog', 'meta', 'stream'],
   types: ['movie', 'series'],
@@ -239,7 +239,13 @@ addonRouter.get('/stream/:type/:id.json', async (req, res) => {
     try {
       const meta = await resolveImdb(type, id);
       const queries = searchQueries(meta);
-      const candidates = await searchTorrents(queries);
+      // Pass the title + year so search.js can anchor relevance (avoids "Her"
+      // matching "HERO"/"Her Granddaughter"). For series we leave year null —
+      // the SxxEyy filter below disambiguates the episode instead.
+      const candidates = await searchTorrents(queries, {
+        title: meta.name,
+        year: isEpisode ? null : meta.year,
+      });
       const cleanTitle = `${meta.name}${meta.year ? ` (${meta.year})` : ''}${isEpisode ? ` S${String(season).padStart(2, '0')}E${String(episode).padStart(2, '0')}` : ''}`;
 
       // For an episode page, keep only torrents whose name parses to the SAME

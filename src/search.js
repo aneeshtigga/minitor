@@ -96,17 +96,87 @@ function normalizeForMatch(s = '') {
     .trim();
 }
 
-/** Tokenize a query into matchable words (drop 1-char noise). */
+/** Tokenize a string into matchable words (keep 1-char words like "9", "z"). */
 function tokenize(s) {
-  return normalizeForMatch(s).split(' ').filter((w) => w.length > 1);
+  return normalizeForMatch(s).split(' ').filter(Boolean);
 }
 
-/** Loose title match so we don't show wildly unrelated torrents. */
-function looksRelevant(name, queryWords) {
-  const n = normalizeForMatch(name);
-  // require that most query words appear (handles punctuation/extra tags)
-  const hits = queryWords.filter((w) => n.includes(w)).length;
-  return hits >= Math.ceil(queryWords.length * 0.6);
+/**
+ * Strip leading junk that release names prepend BEFORE the actual title, so the
+ * title can be anchored at the start: group tags ("[MagicStar]", "(NOP)"),
+ * stray leading dashes/colons (TorrentDownloads prefixes "-    "), and
+ * "site.com - " banners.
+ */
+function stripLeadingJunk(name) {
+  let s = name.replace(/^[\s\-–:]+/, '');
+  s = s.replace(/^\s*(?:[[({][^\])}]*[\])}]\s*)+/, ''); // [tags] (groups) {x}
+  s = s.replace(/^\s*[\w-]+\.(?:com|net|org|info|me|cc|tv|to)\s*[-–:]*\s*/i, ''); // site.com -
+  return s.replace(/^[\s\-–:]+/, '');
+}
+
+// Leading articles a release name may drop ("The Matrix" -> "Matrix.1999...").
+const ARTICLE_WORDS = new Set(['the', 'a', 'an']);
+// Short connective words a release may omit ("Love & Anarchy" -> "Love Anarchy").
+const FILLER_WORDS = new Set(['the', 'a', 'an', 'and', 'of', 'or', 'to', 'in', 'on', 'at', 'for', 'with']);
+
+function dropLeadingArticles(tokens) {
+  let i = 0;
+  while (i < tokens.length && ARTICLE_WORDS.has(tokens[i])) i++;
+  return tokens.slice(i);
+}
+
+/**
+ * A title is "distinctive" if a bare title-prefix match is unlikely to collide
+ * with unrelated releases: 2+ significant words, or one long (5+ char) word.
+ * Short/common one-word titles ("Her", "It", "Up") are NOT distinctive and
+ * need the year as an extra anchor to avoid matching "HERO", "Her Granddaughter", …
+ */
+function isDistinctive(titleWords) {
+  const sig = titleWords.filter((w) => !FILLER_WORDS.has(w));
+  return sig.length >= 2 || (sig.length === 1 && sig[0].length >= 5);
+}
+
+// How far apart title words may drift in a release name (extra inserted tokens).
+const MATCH_GAP = 2;
+
+/**
+ * Relevance match. Instead of the old "60% of query words appear ANYWHERE"
+ * (which let "Her" match "HERO", "Enter Her Exit", "with her …"), we require
+ * the title to be ANCHORED at the start of the (junk-stripped) release name,
+ * in order, and — for non-distinctive titles — the year to sit right after it.
+ *
+ *   name        release name from the indexer
+ *   titleWords  tokenized Cinemeta title (no year/SxxEyy)
+ *   year        release year (Number) or null to skip the year anchor (series)
+ */
+function looksRelevant(name, titleWords, year) {
+  const want = dropLeadingArticles(titleWords);
+  if (!want.length) return false;
+  const tokens = dropLeadingArticles(tokenize(stripLeadingJunk(name)));
+  if (!tokens.length || tokens[0] !== want[0]) return false; // must start with the title
+
+  // Walk the remaining title words in order, allowing a small gap (inserted
+  // tokens) and letting the release omit a filler word ("and", "the", …).
+  let ti = 1;
+  let ni = 1;
+  while (ti < want.length) {
+    let found = -1;
+    for (let k = ni; k <= ni + MATCH_GAP && k < tokens.length; k++) {
+      if (tokens[k] === want[ti]) { found = k; break; }
+    }
+    if (found >= 0) { ni = found + 1; ti++; continue; }
+    if (FILLER_WORDS.has(want[ti])) { ti++; continue; } // release dropped it
+    return false; // a significant title word didn't match in order
+  }
+
+  // Year anchor for short/common titles: the year must IMMEDIATELY follow the
+  // title (±1 for off-by-one release/IMDb year mismatches), so "Her 2014"
+  // passes but "Her Granddaughter 2014" does not.
+  if (year && !isDistinctive(want)) {
+    const next = tokens[ni];
+    return next === String(year) || next === String(year - 1) || next === String(year + 1);
+  }
+  return true;
 }
 
 /**
@@ -165,11 +235,18 @@ async function attachMagnets(rows) {
  * ranked by quality then seeders. Each candidate has enough to play:
  *   { name, quality, qualityRank, seeders, size, sizeText, magnet, infohash }
  *
+ * `match` carries the relevance criteria so we only keep torrents that are
+ * actually this title (not "HERO" / "Her Granddaughter" for a search of "Her"):
+ *   { title: 'Her', year: 2014 }   // year null for series (the SxxEyy filter in
+ *                                   // addon.js handles episode disambiguation)
+ *
  * Results are cached per-query for RESULT_TTL_MS so repeat visits are instant.
  */
-export async function searchTorrents(queries) {
-  // Tokenize with separator normalization so hyphenated titles match.
-  const queryWords = tokenize(queries[0] || '');
+export async function searchTorrents(queries, match = {}) {
+  // Title words to anchor against (no year/SxxEyy); fall back to the first
+  // query stripped of a trailing year if no explicit title was passed.
+  const titleWords = tokenize(match.title || (queries[0] || '').replace(/\b(19|20)\d{2}\b.*$/, ''));
+  const year = match.year ? Number(match.year) : null;
 
   const cacheKey = (queries[0] || '').toLowerCase();
   const cached = cacheGet(cacheKey);
@@ -210,7 +287,7 @@ export async function searchTorrents(queries) {
   // Keep only relevant rows, then attach a magnet to each — directly if the
   // plugin gave one, otherwise by resolving its description-page URL.
   // (apibay rows already carry _magnet, so they skip resolution.)
-  const relevant = rows.filter((r) => looksRelevant(r.fileName || '', queryWords));
+  const relevant = rows.filter((r) => looksRelevant(r.fileName || '', titleWords, year));
   await attachMagnets(relevant);
 
   // The SAME torrent (infohash) often appears across providers — and some
