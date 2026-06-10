@@ -8,8 +8,29 @@ import {
   detectLanguages,
   detectTags,
   parseSeasonEpisode,
+  tierRank,
   PUBLIC_TRACKERS,
 } from './util.js';
+
+/**
+ * Drop near-duplicate releases: within the same tier, torrents whose sizes are
+ * within ~2% of each other are almost certainly the same encode re-uploaded.
+ * Input must already be sorted best-first; we keep the first of each cluster.
+ */
+function dedupeBySize(ranked, tolerance = 0.02) {
+  const kept = [];
+  for (const c of ranked) {
+    const dup = kept.find(
+      (k) =>
+        k.tier === c.tier &&
+        c.size > 0 &&
+        k.size > 0 &&
+        Math.abs(k.size - c.size) / Math.max(k.size, c.size) <= tolerance,
+    );
+    if (!dup) kept.push(c);
+  }
+  return kept;
+}
 import { resolveImdb, searchQueries } from './cinemeta.js';
 import { searchTorrents } from './search.js';
 
@@ -229,16 +250,30 @@ addonRouter.get('/stream/:type/:id.json', async (req, res) => {
         return se.season === season && se.episode === episode;
       };
 
-      // Drop dead swarms (0 seeders never play). Sort: quality -> preferred
-      // provider -> seeders (matches searchTorrents' ordering).
-      const live = candidates
+      // Drop dead swarms, sort, and dedup near-identical releases.
+      // Sort order (Torrentio-style, per your spec):
+      //   1. tier: 4K DV > 4K HDR > 4K > 1080p > 720p ...
+      //   2. seeders (desc)
+      //   3. single original language before multi-language
+      const ranked = candidates
         .filter((c) => c.seeders > 0 && matchesEpisode(c.name))
+        .map((c) => ({
+          ...c,
+          tier: tierRank(c.name),
+          langCount: detectLanguages(c.name).length,
+        }))
         .sort(
           (a, b) =>
-            b.qualityRank - a.qualityRank ||
-            (b.providerRank || 0) - (a.providerRank || 0) ||
-            b.seeders - a.seeders,
+            b.tier - a.tier ||
+            b.seeders - a.seeders ||
+            // 0 langs (unknown) or 1 lang rank above multi-language (2+)
+            (a.langCount > 1 ? 1 : 0) - (b.langCount > 1 ? 1 : 0),
         );
+
+      // Dedup near-identical file sizes within the same tier — torrents within
+      // ~2% size in the same quality tier are almost always the same release
+      // re-uploaded; keep the best-seeded one (first, since already sorted).
+      const live = dedupeBySize(ranked);
 
       for (const c of live.slice(0, 40)) {
         if (cachedHashes.has(c.infohash.toLowerCase())) continue; // already shown as ⚡

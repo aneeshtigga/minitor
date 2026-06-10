@@ -9,6 +9,7 @@ export function isVideoFile(name) {
 /** Guess a quality label from a filename/torrent name. */
 export function detectQuality(name = '') {
   const n = name.toLowerCase();
+  if (/\b(8k|4320p)\b/.test(n)) return '8K';
   if (/\b(4k|2160p|uhd)\b/.test(n)) return '4K';
   if (/\b1080p\b/.test(n)) return '1080p';
   if (/\b720p\b/.test(n)) return '720p';
@@ -18,7 +19,26 @@ export function detectQuality(name = '') {
 
 /** Rank for sorting (higher = better). */
 export function qualityRank(label) {
-  return { '4K': 4, '1080p': 3, '720p': 2, '480p': 1, SD: 0 }[label] ?? 0;
+  return { '8K': 5, '4K': 4, '1080p': 3, '720p': 2, '480p': 1, SD: 0 }[label] ?? 0;
+}
+
+/**
+ * Fine-grained tier rank used for ordering streams, with HDR variants treated
+ * as sub-tiers WITHIN a resolution (your requested order):
+ *
+ *   4K DV  >  4K HDR  >  4K  >  1080p (DV/HDR/plain)  >  720p  >  ...
+ *
+ * Returns a number where higher = listed first. We reserve 3 sub-slots per
+ * resolution: +2 = Dolby Vision, +1 = HDR, +0 = plain.
+ */
+export function tierRank(name = '') {
+  const q = detectQuality(name);
+  const base = { '8K': 50, '4K': 40, '1080p': 30, '720p': 20, '480p': 10, SD: 0 }[q] ?? 0;
+  const n = name.toLowerCase();
+  let hdrBonus = 0;
+  if (/\bdolby[\s.]?vision\b|\bdovi\b|\bdv\b/.test(n)) hdrBonus = 2; // DV (best)
+  else if (/\bhdr10\+|\bhdr10\b|\bhdr\b/.test(n)) hdrBonus = 1; // HDR
+  return base + hdrBonus;
 }
 
 export function humanBytes(n) {
