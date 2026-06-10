@@ -58,17 +58,22 @@ export const addonRouter = express.Router();
 
 const CATALOG_ID = 'minitor-cache';
 
+// Manifest adapts to STREAM_MODE so the two versions have distinct ids/names
+// and can be installed in Stremio side-by-side without clobbering each other.
+const CACHE_MODE = config.streamMode === 'cache';
 const MANIFEST = {
-  id: 'org.minitor.local',
-  version: '0.3.0',
-  name: 'Minitor',
-  description: 'Searches torrents via your qBittorrent plugins, caches them locally, and streams with seeking.',
+  id: CACHE_MODE ? 'org.minitor.cache' : 'org.minitor.direct',
+  version: '0.4.0',
+  name: CACHE_MODE ? 'Minitor (cache)' : 'Minitor',
+  description: CACHE_MODE
+    ? 'Searches torrents (Jackett/Torznab), downloads them to your local qBittorrent, and streams the local file with seeking.'
+    : 'Searches torrents (Jackett/Torznab) and streams them via Stremio\'s own engine (no local download).',
   resources: ['catalog', 'meta', 'stream'],
   types: ['movie', 'series'],
   idPrefixes: ['minitor:', 'tt'],
-  catalogs: [
-    { type: 'movie', id: CATALOG_ID, name: 'minitor cache' },
-  ],
+  // The local-cache catalog only makes sense in cache mode (direct mode never
+  // writes anything to disk, so there's nothing to list).
+  catalogs: CACHE_MODE ? [{ type: 'movie', id: CATALOG_ID, name: 'minitor cache' }] : [],
   behaviorHints: { configurable: false, configurationRequired: false },
 };
 
@@ -143,12 +148,19 @@ function cachedStream(st) {
 /**
  * Stream object for a search hit not yet cached.
  *
- * We hand Stremio the torrent's `infoHash` instead of a URL. Stremio's OWN
- * built-in streaming server then streams the torrent directly — the same
- * mechanism Torrentio/TPB+ use: proper sequential piece selection, instant
- * playback, and Stremio caches what it downloads (so re-watches are instant
- * with no double-download). minitor stays a pure, bandwidth-efficient search
- * addon; no qBittorrent download for these.
+ * Two behaviours, picked by config.streamMode:
+ *
+ *   'direct' (default) — hand Stremio the torrent's `infoHash` + `sources`.
+ *     Stremio's OWN engine streams it directly (the Torrentio/TPB+ mechanism):
+ *     sequential piece selection, instant playback, Stremio caches what it
+ *     downloads. minitor stays a pure, bandwidth-efficient search addon; no
+ *     qBittorrent download.
+ *
+ *   'cache' — hand Stremio a `/play/<infohash>` URL. Clicking it makes minitor
+ *     add the magnet to qBittorrent (via recallMagnet -> on-demand cache in
+ *     stream.js), download it to local disk, and range-stream the local file.
+ *     A permanent local copy you can re-watch instantly and serve to other
+ *     devices on your LAN.
  */
 function searchStream(c, displayName) {
   const name = displayName || cleanReleaseName(c.name) || c.name;
@@ -163,13 +175,32 @@ function searchStream(c, displayName) {
   const stats = `👤 ${c.seeders} · 💾 ${c.sizeText} · ⚙ ${c.provider || 'unknown'}`;
   const flagLine = flags.length ? `\n${flags.join(' / ')}` : '';
 
-  // `sources` gives Stremio's engine extra peer sources (trackers + DHT).
-  const allTrackers = [...new Set([...(c.trackers || []), ...PUBLIC_TRACKERS])];
-  const sources = [...allTrackers.map((t) => `tracker:${t}`), `dht:${c.infohash}`];
-
-  return {
+  const base = {
     name: `minitor\n⬇ ${badge}`,
     title: `${name}\n${stats}${flagLine}`,
+    behaviorHints: {
+      bingeGroup: `minitor-${c.infohash}`,
+      filename: name,
+    },
+  };
+
+  if (config.streamMode === 'cache') {
+    // Download-and-serve: point at our own range-streaming endpoint. The magnet
+    // was already stashed via rememberMagnet(); /play adds it to qBittorrent on
+    // first hit and serves the local file as it downloads.
+    return {
+      ...base,
+      url: `${config.publicUrl}/play/${c.infohash}`,
+      behaviorHints: { ...base.behaviorHints, notWebReady: false },
+    };
+  }
+
+  // Direct (default): let Stremio's engine stream the torrent.
+  // `sources` gives that engine extra peer sources (trackers + DHT).
+  const allTrackers = [...new Set([...(c.trackers || []), ...PUBLIC_TRACKERS])];
+  const sources = [...allTrackers.map((t) => `tracker:${t}`), `dht:${c.infohash}`];
+  return {
+    ...base,
     // infoHash + fileIdx -> Stremio streams it via its own engine and binds its
     // stats to a concrete file (without fileIdx the stats globe stays grey).
     // 0 is correct for single-video torrents; Stremio re-selects the largest
@@ -177,10 +208,6 @@ function searchStream(c, displayName) {
     infoHash: c.infohash,
     fileIdx: 0,
     sources,
-    behaviorHints: {
-      bingeGroup: `minitor-${c.infohash}`,
-      filename: name,
-    },
   };
 }
 

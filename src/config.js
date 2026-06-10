@@ -14,9 +14,20 @@ function clean(url) {
 const DOWNLOAD_DIR =
   process.env.DOWNLOAD_DIR || path.join(os.homedir(), 'Downloads', 'minitor');
 
+// Streaming mode — the one knob that picks which "version" of minitor runs:
+//   'direct' : hand Stremio the infoHash and let ITS engine stream the torrent
+//              (lightweight, no local download — like Torrentio).
+//   'cache'  : minitor adds the torrent to qBittorrent, downloads it to disk,
+//              and range-streams the local file via /play (permanent local copy,
+//              stream-while-downloading).
+// Anything other than 'cache' is treated as 'direct'.
+const STREAM_MODE = (process.env.STREAM_MODE || 'direct').toLowerCase() === 'cache' ? 'cache' : 'direct';
+
 export const config = {
   port: Number(process.env.PORT || 11470),
   publicUrl: clean(process.env.PUBLIC_URL || `http://127.0.0.1:${process.env.PORT || 11470}`),
+
+  streamMode: STREAM_MODE,
 
   qbit: {
     url: clean(process.env.QBIT_URL || 'http://127.0.0.1:8080'),
