@@ -68,6 +68,29 @@ export function nameFromMagnet(magnet) {
   return m ? decodeURIComponent(m[1].replace(/\+/g, ' ')) : null;
 }
 
+/** Extract all announce tracker URLs from a magnet's tr= params. */
+export function trackersFromMagnet(magnet) {
+  return [...(magnet || '').matchAll(/[?&]tr=([^&]+)/g)].map((m) => decodeURIComponent(m[1]));
+}
+
+/**
+ * Well-known public BitTorrent trackers. We merge these into every torrent's
+ * peer-source list so Stremio's engine finds peers fast (lights up the globe
+ * with peer/speed stats) even when a magnet ships few/no trackers of its own.
+ */
+export const PUBLIC_TRACKERS = [
+  'udp://tracker.opentrackr.org:1337/announce',
+  'udp://open.tracker.cl:1337/announce',
+  'udp://open.demonii.com:1337/announce',
+  'udp://tracker.torrent.eu.org:451/announce',
+  'udp://exodus.desync.com:6969/announce',
+  'udp://tracker.openbittorrent.com:6969/announce',
+  'udp://opentracker.i2p.rocks:6969/announce',
+  'udp://tracker.dler.org:6969/announce',
+  'udp://explodie.org:6969/announce',
+  'udp://tracker.torrent.eu.org:451/announce',
+];
+
 /**
  * Clean a torrent release name for display.
  * Torrent search plugins return names in many languages; some come back as

@@ -1,5 +1,5 @@
 import { qbit } from './qbittorrent.js';
-import { detectQuality, qualityRank, humanBytes, infohashFromMagnet } from './util.js';
+import { detectQuality, qualityRank, humanBytes, infohashFromMagnet, trackersFromMagnet } from './util.js';
 import { resolveRowMagnet } from './resolve-magnet.js';
 
 /**
@@ -204,6 +204,7 @@ export async function searchTorrents(queries) {
       providerRank: providerRank(row.engineName), // preference order
       magnet,
       infohash,
+      trackers: trackersFromMagnet(magnet), // for Stremio's `sources` array
     });
   }
 

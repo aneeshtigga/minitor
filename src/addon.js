@@ -8,6 +8,7 @@ import {
   detectLanguages,
   detectTags,
   parseSeasonEpisode,
+  PUBLIC_TRACKERS,
 } from './util.js';
 import { resolveImdb, searchQueries } from './cinemeta.js';
 import { searchTorrents } from './search.js';
@@ -141,11 +142,19 @@ function searchStream(c, displayName) {
   const stats = `👤 ${c.seeders} · 💾 ${c.sizeText} · ⚙ ${c.provider || 'unknown'}`;
   const flagLine = flags.length ? `\n${flags.join(' / ')}` : '';
 
+  // `sources` tells Stremio's engine where to find peers: each tracker plus a
+  // DHT entry. Without this, Stremio falls back to DHT-only, which is slow to
+  // populate peers (the "greyed-out globe / no stats" symptom). We merge the
+  // magnet's own trackers with a known-good public set, deduped.
+  const allTrackers = [...new Set([...(c.trackers || []), ...PUBLIC_TRACKERS])];
+  const sources = [...allTrackers.map((t) => `tracker:${t}`), `dht:${c.infohash}`];
+
   return {
     name: `minitor\n⬇ ${badge}`,
     title: `${name}\n${stats}${flagLine}`,
     // infoHash -> Stremio streams it via its own engine (instant, reliable).
     infoHash: c.infohash,
+    sources,
     behaviorHints: { bingeGroup: `minitor-${c.infohash}` },
   };
 }
