@@ -1,0 +1,180 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>minitor — local torrent cache</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body {
+    font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    margin: 0; background: #0e1117; color: #e6edf3;
+  }
+  header { padding: 20px 24px; border-bottom: 1px solid #21262d; }
+  header h1 { margin: 0; font-size: 20px; }
+  header p { margin: 4px 0 0; color: #8b949e; font-size: 13px; }
+  main { max-width: 920px; margin: 0 auto; padding: 24px; }
+  .card { background: #161b22; border: 1px solid #21262d; border-radius: 10px; padding: 16px; margin-bottom: 20px; }
+  h2 { font-size: 15px; margin: 0 0 12px; color: #c9d1d9; }
+  .row { display: flex; gap: 8px; }
+  input[type=text] {
+    flex: 1; padding: 10px 12px; border-radius: 8px; border: 1px solid #30363d;
+    background: #0d1117; color: #e6edf3; font-size: 14px;
+  }
+  button {
+    padding: 10px 16px; border-radius: 8px; border: 1px solid #2ea043;
+    background: #238636; color: white; font-size: 14px; cursor: pointer; white-space: nowrap;
+  }
+  button.ghost { background: transparent; border-color: #30363d; color: #c9d1d9; }
+  button.danger { background: transparent; border-color: #f8514922; color: #f85149; }
+  button:disabled { opacity: .5; cursor: default; }
+  .muted { color: #8b949e; font-size: 13px; }
+  .item { border-top: 1px solid #21262d; padding: 12px 0; }
+  .item:first-of-type { border-top: 0; }
+  .item h3 { margin: 0 0 4px; font-size: 14px; word-break: break-word; }
+  .bar { height: 6px; background: #21262d; border-radius: 4px; overflow: hidden; margin: 8px 0; }
+  .bar > div { height: 100%; background: #2ea043; width: 0; transition: width .4s; }
+  .pills { display: flex; gap: 6px; flex-wrap: wrap; font-size: 12px; }
+  .pill { background: #21262d; padding: 2px 8px; border-radius: 999px; color: #8b949e; }
+  .pill.q { background: #1f6feb33; color: #79c0ff; }
+  .pill.ok { background: #2ea04333; color: #56d364; }
+  .copy { font-size: 12px; color: #58a6ff; cursor: pointer; user-select: all; }
+  .results .res { display: flex; justify-content: space-between; align-items: center; gap: 12px; border-top: 1px solid #21262d; padding: 10px 0; }
+  .res:first-child { border-top: 0; }
+  .badge { font-size: 11px; padding: 1px 6px; border-radius: 4px; background: #1f6feb33; color: #79c0ff; }
+  .err { color: #f85149; font-size: 13px; }
+  a { color: #58a6ff; }
+</style>
+</head>
+<body>
+<header>
+  <h1>minitor</h1>
+  <p>Local torrent cache for Stremio — qBittorrent downloads, this serves it back over HTTP with seeking.</p>
+</header>
+<main>
+  <div class="card">
+    <h2>Add by magnet / .torrent URL</h2>
+    <div class="row">
+      <input id="magnet" type="text" placeholder="magnet:?xt=urn:btih:…  or  https://…/file.torrent" />
+      <button id="addBtn">Cache it</button>
+    </div>
+    <p id="addMsg" class="muted"></p>
+  </div>
+
+  <div class="card">
+    <h2>Search Internet Archive (Creative Commons / public domain)</h2>
+    <div class="row">
+      <input id="q" type="text" placeholder="e.g. Night of the Living Dead, Big Buck Bunny…" />
+      <button id="searchBtn" class="ghost">Search</button>
+    </div>
+    <div id="results" class="results"></div>
+  </div>
+
+  <div class="card">
+    <h2>Cached <span id="count" class="muted"></span></h2>
+    <p class="muted">Stremio addon URL: <span class="copy" id="addonUrl"></span></p>
+    <div id="list"></div>
+  </div>
+</main>
+
+<script>
+const $ = (s) => document.querySelector(s);
+const api = (p, opts) => fetch('/api' + p, opts).then(r => r.json());
+
+$('#addonUrl').textContent = location.origin + '/manifest.json';
+
+async function add() {
+  const v = $('#magnet').value.trim();
+  if (!v) return;
+  $('#addBtn').disabled = true; $('#addMsg').textContent = 'Adding…'; $('#addMsg').className = 'muted';
+  try {
+    const body = v.startsWith('magnet:') ? { magnet: v } : { torrentUrl: v };
+    const r = await api('/torrents', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body) });
+    if (r.error) throw new Error(r.error);
+    $('#addMsg').textContent = 'Added. Stremio id: ' + r.stremioId;
+    $('#magnet').value = '';
+    refresh();
+  } catch (e) {
+    $('#addMsg').className = 'err'; $('#addMsg').textContent = e.message;
+  } finally { $('#addBtn').disabled = false; }
+}
+
+async function search() {
+  const q = $('#q').value.trim();
+  if (!q) return;
+  $('#searchBtn').disabled = true;
+  $('#results').innerHTML = '<p class="muted">Searching archive.org…</p>';
+  try {
+    const items = await api('/search?q=' + encodeURIComponent(q));
+    if (items.error) throw new Error(items.error);
+    if (!items.length) { $('#results').innerHTML = '<p class="muted">No playable items found.</p>'; return; }
+    $('#results').innerHTML = items.map((it, i) => `
+      <div class="res">
+        <div>
+          <div>${esc(it.title)} ${it.year ? '<span class="muted">('+it.year+')</span>' : ''}</div>
+          <div class="muted">${it.videoCount} video file(s) · ${it.identifier}</div>
+        </div>
+        <div style="display:flex;gap:8px;align-items:center">
+          <span class="badge">${it.bestQuality}</span>
+          <button data-i="${i}" class="cacheRes">Cache</button>
+        </div>
+      </div>`).join('');
+    document.querySelectorAll('.cacheRes').forEach(btn => btn.onclick = async () => {
+      const it = items[btn.dataset.i];
+      btn.disabled = true; btn.textContent = 'Adding…';
+      const r = await api('/torrents', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ torrentUrl: it.torrentUrl, name: it.title }) });
+      btn.textContent = r.error ? 'Error' : 'Added ✓';
+      refresh();
+    });
+  } catch (e) {
+    $('#results').innerHTML = '<p class="err">' + esc(e.message) + '</p>';
+  } finally { $('#searchBtn').disabled = false; }
+}
+
+function esc(s){ return (s||'').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+function pct(n){ return Math.floor((n||0)*100); }
+function bytes(n){ if(!n) return '0 B'; const u=['B','KB','MB','GB','TB']; const i=Math.min(u.length-1,Math.floor(Math.log(n)/Math.log(1024))); return (n/1024**i).toFixed(i?1:0)+' '+u[i]; }
+
+async function refresh() {
+  let list;
+  try { list = await api('/torrents'); } catch { return; }
+  if (!Array.isArray(list)) return;
+  $('#count').textContent = '(' + list.length + ')';
+  $('#list').innerHTML = list.length ? list.map(s => {
+    const vp = s.video ? s.video.progress : s.progress;
+    const playable = s.video && s.video.playable;
+    return `
+    <div class="item">
+      <h3>${esc(s.name)}</h3>
+      <div class="bar"><div style="width:${pct(vp)}%"></div></div>
+      <div class="pills">
+        <span class="pill q">${s.quality}</span>
+        <span class="pill ${playable?'ok':''}">${pct(vp)}% ${playable?'· playable':''}</span>
+        <span class="pill">${s.state}</span>
+        <span class="pill">↓ ${bytes(s.dlspeed)}/s</span>
+        <span class="pill">${s.numSeeds}S / ${s.numLeechs}L</span>
+        <span class="pill">${bytes(s.size)}</span>
+      </div>
+      <div style="margin-top:8px;display:flex;gap:8px;align-items:center">
+        <span class="copy">minitor:${s.hash}</span>
+        <button class="ghost del" data-h="${s.hash}">Remove</button>
+      </div>
+    </div>`;
+  }).join('') : '<p class="muted">Nothing cached yet.</p>';
+
+  document.querySelectorAll('.del').forEach(b => b.onclick = async () => {
+    await api('/torrents/' + b.dataset.h + '?files=0', { method: 'DELETE' });
+    refresh();
+  });
+}
+
+$('#addBtn').onclick = add;
+$('#searchBtn').onclick = search;
+$('#magnet').addEventListener('keydown', e => { if (e.key === 'Enter') add(); });
+$('#q').addEventListener('keydown', e => { if (e.key === 'Enter') search(); });
+refresh();
+setInterval(refresh, 2000);
+</script>
+</body>
+</html>
