@@ -119,9 +119,14 @@ function cachedStream(st) {
 }
 
 /**
- * Stream object for a search hit not yet cached (clicking it triggers caching).
- * Points at minitor's own /play server: clicking adds the torrent to qBittorrent
- * on demand and streams it from local disk as it downloads.
+ * Stream object for a search hit not yet cached.
+ *
+ * We hand Stremio the torrent's `infoHash` instead of a URL. Stremio's OWN
+ * built-in streaming server then streams the torrent directly — the same
+ * mechanism Torrentio/TPB+ use: proper sequential piece selection, instant
+ * playback, and Stremio caches what it downloads (so re-watches are instant
+ * with no double-download). minitor stays a pure, bandwidth-efficient search
+ * addon; no qBittorrent download for these.
  */
 function searchStream(c, displayName) {
   const name = displayName || cleanReleaseName(c.name) || c.name;
@@ -139,7 +144,8 @@ function searchStream(c, displayName) {
   return {
     name: `minitor\n⬇ ${badge}`,
     title: `${name}\n${stats}${flagLine}`,
-    url: `${config.publicUrl}/play/${c.infohash}`,
+    // infoHash -> Stremio streams it via its own engine (instant, reliable).
+    infoHash: c.infohash,
     behaviorHints: { bingeGroup: `minitor-${c.infohash}` },
   };
 }

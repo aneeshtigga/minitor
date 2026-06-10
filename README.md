@@ -1,43 +1,53 @@
 # minitor
 
-A tiny, self-hosted **TorBox-style** torrent cache for **Stremio** — a learning POC.
+A self-hosted **Stremio addon** that searches torrents via your qBittorrent
+search plugins and streams them — a learning POC for how P2P streaming addons
+(Torrentio/TPB+/TorBox) work under the hood.
 
-qBittorrent does the BitTorrent downloading. `minitor` watches it, picks the
-video file, and serves it back to Stremio over HTTP **with range support**, so
-you can seek/scrub and start watching before the download finishes.
+**Two streaming modes:**
 
-> **Reality check (important):** Unlike TorBox, a *single local machine* can't
-> make the **first** play of a torrent faster — that first download is gated by
-> the same peers/seeders as Stremio's built-in streaming, plus your home
-> upload/NAT. What you *do* get: smooth buffering (sequential download),
-> **instant re-watches** (persistent local cache), early playback, and a real
-> understanding of the BitTorrent + Stremio internals. TorBox is fast mainly
-> because its cache is *shared across thousands of users* and it sits in a
-> datacenter — neither of which a local clone reproduces.
+1. **infoHash (default)** — minitor hands Stremio the torrent's `infoHash` and
+   **Stremio's own streaming engine** plays it directly (same as Torrentio).
+   Instant, reliable, proper sequential playback; Stremio caches what it
+   downloads, so there's no double-download. minitor stays a pure search addon.
+2. **Local cache (`/play`)** — for torrents you've explicitly cached via the web
+   UI, minitor serves them from local disk over HTTP range requests (instant,
+   permanent). This is the qBittorrent download-and-serve path.
+
+> **Reality check:** a *single local machine* can't make the **first** play of a
+> torrent faster — it's gated by the same peers/seeders either way, plus your
+> home upload/NAT. TorBox is fast because its cache is *shared across thousands
+> of users* in a datacenter. What you learn here: the BitTorrent + Stremio addon
+> internals (catalog vs stream, infoHash streaming, sequential piece selection,
+> metadata resolution, swarm reachability).
 
 ## Architecture
 
 ```
   Stremio ──/manifest.json──▶ minitor (addon)
-          ──/stream/….json──▶ returns a URL: http://<you>:11470/play/<infohash>
-          ──GET /play/… ─────▶ minitor range-streams the cached file (HTTP 206)
-                                     │
-                                     ▼
-                         qBittorrent Web API  ◀── downloads via BitTorrent
-                                     │
-                                     ▼
-                         file on disk (DOWNLOAD_DIR)
+          ──/stream/….json──▶ resolve IMDb id (Cinemeta) -> search qBittorrent
+                               plugins -> ranked streams, each carrying infoHash
+          ──click stream────▶ Stremio's OWN engine streams the torrent directly
+
+  (optional local-cache path, for items cached via the web UI:)
+          ──GET /play/… ─────▶ minitor range-streams a local file (HTTP 206)
+                                     │  qBittorrent Web API downloads it
+                                     ▼  file on disk (DOWNLOAD_DIR)
 ```
 
 | File                  | Job                                                            |
 |-----------------------|---------------------------------------------------------------|
-| `src/qbittorrent.js`  | qBittorrent Web API client (auth, add, list, file priority)   |
-| `src/cache.js`        | Cache index, picks the streamable video file, persists JSON   |
-| `src/stream.js`       | `/play/:hash` — HTTP range/seek streaming                     |
-| `src/addon.js`        | `/manifest.json` + `/stream/...` — the Stremio bridge         |
+| `src/addon.js`        | manifest/catalog/meta/stream — the Stremio bridge             |
+| `src/cinemeta.js`     | IMDb id -> title/year (so we can search torrents)             |
+| `src/search.js`       | qBittorrent plugin search, ranking, result cache              |
+| `src/resolve-magnet.js`| page-URL -> magnet (ThePirateBay via apibay, others via HTML)|
+| `src/qbittorrent.js`  | qBittorrent Web API client (search, add, piece control)       |
+| `src/cache.js`        | local cache index + piece-aware status                        |
+| `src/stream.js`       | `/play/:hash` — local HTTP range/seek streaming               |
 | `src/archive.js`      | Internet Archive search (legal Creative Commons content)      |
-| `src/api.js`          | Control API used by the web UI                                |
-| `public/index.html`   | Web UI: paste a magnet / search / watch progress              |
+| `src/api.js`          | control API used by the web UI                                |
+| `src/util.js`         | quality/lang/tag detection, infohash (base32->hex), formatting|
+| `public/index.html`   | web UI: paste a magnet / search / manually cache              |
 
 ## Setup
 
