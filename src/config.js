@@ -25,6 +25,15 @@ export const config = {
     category: process.env.QBIT_CATEGORY || 'minitor',
   },
 
+  // Jackett Torznab aggregator. When url + apiKey are set, minitor searches
+  // Jackett's "all indexers" endpoint (fuller names, more sources) instead of /
+  // alongside the built-in qBittorrent plugins.
+  jackett: {
+    url: clean(process.env.JACKETT_URL || ''),
+    apiKey: process.env.JACKETT_API_KEY || '',
+    enabled: Boolean(process.env.JACKETT_URL && process.env.JACKETT_API_KEY),
+  },
+
   downloadDir: DOWNLOAD_DIR,
 
   // local JSON "database" for the cache index

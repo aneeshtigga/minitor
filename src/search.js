@@ -1,6 +1,8 @@
 import { qbit } from './qbittorrent.js';
 import { detectQuality, qualityRank, humanBytes, infohashFromMagnet, trackersFromMagnet } from './util.js';
 import { resolveRowMagnet, searchApibay } from './resolve-magnet.js';
+import { searchJackett } from './jackett.js';
+import { config } from './config.js';
 
 /**
  * Torrent search via the user's installed qBittorrent search plugins.
@@ -41,6 +43,11 @@ const PROVIDER_LABELS = {
 };
 function prettyProvider(engineName) {
   if (!engineName) return 'unknown';
+  // Jackett results are "jackett:<indexer>" — show the real indexer name.
+  if (engineName.startsWith('jackett:')) {
+    const idx = engineName.slice('jackett:'.length);
+    return PROVIDER_LABELS[idx.toLowerCase()] || idx;
+  }
   return PROVIDER_LABELS[engineName.toLowerCase()] || engineName;
 }
 
@@ -48,8 +55,10 @@ function prettyProvider(engineName) {
 // thepiratebay > yts > torrentdownload > bitsearch > rarbg > everything else.
 const PROVIDER_PREFERENCE = ['thepiratebay', 'yts', 'torrentdownload', 'bitsearch', 'therarbg'];
 function providerRank(engineName) {
+  // Jackett-sourced results carry the fullest names + best coverage; rank them
+  // above the built-in plugins so their (untruncated) copy wins the merge.
+  if ((engineName || '').startsWith('jackett:')) return 100;
   const idx = PROVIDER_PREFERENCE.indexOf((engineName || '').toLowerCase());
-  // Preferred providers get high ranks (first in list = highest); others get 0.
   return idx === -1 ? 0 : PROVIDER_PREFERENCE.length - idx;
 }
 
@@ -168,15 +177,19 @@ export async function searchTorrents(queries) {
 
   let rows = [];
   // Try queries best-first; stop as soon as one yields relevant hits.
-  // Run the apibay (ThePirateBay JSON API) search in parallel — it returns
-  // fuller names than the truncating qBittorrent plugins, in one request.
+  // Run all sources in parallel:
+  //  - Jackett (Torznab aggregator): fullest names, most indexers — when enabled
+  //  - qBittorrent plugins: the user's installed python search engines
+  //  - apibay (ThePirateBay JSON API): fuller names than the plugins, 1 request
+  // Results merge by infohash later, so overlap is fine and fills name gaps.
   for (const q of queries) {
-    const [pluginRows, apibayRows] = await Promise.all([
+    const [jackettRows, pluginRows, apibayRows] = await Promise.all([
+      config.jackett.enabled ? searchJackett(q).catch(() => []) : Promise.resolve([]),
       runSearch(q).catch(() => []),
       searchApibay(q).catch(() => []),
     ]);
-    if (pluginRows.length || apibayRows.length) {
-      rows = [...pluginRows, ...apibayRows];
+    if (jackettRows.length || pluginRows.length || apibayRows.length) {
+      rows = [...jackettRows, ...pluginRows, ...apibayRows];
       break;
     }
   }
