@@ -1,6 +1,6 @@
 import { qbit } from './qbittorrent.js';
 import { detectQuality, qualityRank, humanBytes, infohashFromMagnet, trackersFromMagnet } from './util.js';
-import { resolveRowMagnet } from './resolve-magnet.js';
+import { resolveRowMagnet, searchApibay } from './resolve-magnet.js';
 
 /**
  * Torrent search via the user's installed qBittorrent search plugins.
@@ -168,45 +168,77 @@ export async function searchTorrents(queries) {
 
   let rows = [];
   // Try queries best-first; stop as soon as one yields relevant hits.
+  // Run the apibay (ThePirateBay JSON API) search in parallel — it returns
+  // fuller names than the truncating qBittorrent plugins, in one request.
   for (const q of queries) {
-    const r = await runSearch(q).catch(() => []);
-    if (r.length) {
-      rows = r;
+    const [pluginRows, apibayRows] = await Promise.all([
+      runSearch(q).catch(() => []),
+      searchApibay(q).catch(() => []),
+    ]);
+    if (pluginRows.length || apibayRows.length) {
+      rows = [...pluginRows, ...apibayRows];
       break;
     }
   }
 
   // Keep only relevant rows, then attach a magnet to each — directly if the
   // plugin gave one, otherwise by resolving its description-page URL.
+  // (apibay rows already carry _magnet, so they skip resolution.)
   const relevant = rows.filter((r) => looksRelevant(r.fileName || '', queryWords));
   await attachMagnets(relevant);
 
-  const seen = new Set();
-  const candidates = [];
+  // The SAME torrent (infohash) often appears across providers — and some
+  // plugins (e.g. TorrentDownload) truncate the release name, stripping
+  // DV/HDR/codec markers. So instead of dropping duplicates, MERGE them per
+  // infohash: keep the fullest name (so quality tags survive), the highest
+  // seeder count seen, and the union of trackers.
+  const byHash = new Map();
   for (const row of relevant) {
-    const name = row.fileName || '';
     const magnet = row._magnet || null;
     const infohash = magnet ? infohashFromMagnet(magnet) : null;
     if (!infohash) continue; // need an infohash to cache + dedupe + play
 
-    if (seen.has(infohash)) continue;
-    seen.add(infohash);
+    const name = row.fileName || '';
+    const seeders = Number(row.nbSeeders) || row._seeders || 0;
+    const trackers = trackersFromMagnet(magnet);
 
-    const quality = detectQuality(name);
-    candidates.push({
-      name,
+    const existing = byHash.get(infohash);
+    if (!existing) {
+      byHash.set(infohash, {
+        name,
+        seeders,
+        size: Number(row.fileSize) || 0,
+        provider: prettyProvider(row.engineName),
+        providerRank: providerRank(row.engineName),
+        magnet,
+        infohash,
+        trackers,
+      });
+    } else {
+      // Prefer the fuller name (longer = more complete, retains quality tags).
+      if (name.length > existing.name.length) existing.name = name;
+      // Keep the strongest signal for seeders / size / provider preference.
+      existing.seeders = Math.max(existing.seeders, seeders);
+      if (!existing.size && row.fileSize) existing.size = Number(row.fileSize);
+      const pr = providerRank(row.engineName);
+      if (pr > existing.providerRank) {
+        existing.providerRank = pr;
+        existing.provider = prettyProvider(row.engineName);
+      }
+      // Union trackers (more sources = faster peer discovery).
+      existing.trackers = [...new Set([...existing.trackers, ...trackers])];
+    }
+  }
+
+  const candidates = [...byHash.values()].map((c) => {
+    const quality = detectQuality(c.name);
+    return {
+      ...c,
       quality,
       qualityRank: qualityRank(quality),
-      seeders: Number(row.nbSeeders) || row._seeders || 0,
-      size: Number(row.fileSize) || 0,
-      sizeText: humanBytes(Number(row.fileSize) || 0),
-      provider: prettyProvider(row.engineName), // display label
-      providerRank: providerRank(row.engineName), // preference order
-      magnet,
-      infohash,
-      trackers: trackersFromMagnet(magnet), // for Stremio's `sources` array
-    });
-  }
+      sizeText: humanBytes(c.size || 0),
+    };
+  });
 
   // Sort: quality (best first) -> preferred provider -> seeders.
   candidates.sort(
