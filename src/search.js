@@ -177,19 +177,32 @@ export async function searchTorrents(queries) {
 
   let rows = [];
   // Try queries best-first; stop as soon as one yields relevant hits.
-  // Run all sources in parallel:
-  //  - Jackett (Torznab aggregator): fullest names, most indexers — when enabled
-  //  - qBittorrent plugins: the user's installed python search engines
-  //  - apibay (ThePirateBay JSON API): fuller names than the plugins, 1 request
-  // Results merge by infohash later, so overlap is fine and fills name gaps.
+  //
+  // PRIMARY: Jackett (Torznab aggregator) — one fast request (~1-3s), full
+  // untruncated names, real seeders/infohash, hundreds of indexers. This is
+  // the fast path that makes minitor load like Torrentio.
+  //
+  // FALLBACK (only if Jackett isn't configured): the qBittorrent python plugins
+  // + apibay. These are slow (~12s polling) and truncate names — kept solely so
+  // minitor still works before Jackett is set up.
   for (const q of queries) {
-    const [jackettRows, pluginRows, apibayRows] = await Promise.all([
-      config.jackett.enabled ? searchJackett(q).catch(() => []) : Promise.resolve([]),
+    if (config.jackett.enabled) {
+      const jackettRows = await searchJackett(q).catch(() => []);
+      if (jackettRows.length) {
+        rows = jackettRows;
+        break;
+      }
+      // Jackett enabled but this query returned nothing — try the next query.
+      continue;
+    }
+
+    // Fallback path: plugins + apibay in parallel.
+    const [pluginRows, apibayRows] = await Promise.all([
       runSearch(q).catch(() => []),
       searchApibay(q).catch(() => []),
     ]);
-    if (jackettRows.length || pluginRows.length || apibayRows.length) {
-      rows = [...jackettRows, ...pluginRows, ...apibayRows];
+    if (pluginRows.length || apibayRows.length) {
+      rows = [...pluginRows, ...apibayRows];
       break;
     }
   }
