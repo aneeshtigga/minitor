@@ -142,20 +142,24 @@ function searchStream(c, displayName) {
   const stats = `👤 ${c.seeders} · 💾 ${c.sizeText} · ⚙ ${c.provider || 'unknown'}`;
   const flagLine = flags.length ? `\n${flags.join(' / ')}` : '';
 
-  // `sources` tells Stremio's engine where to find peers: each tracker plus a
-  // DHT entry. Without this, Stremio falls back to DHT-only, which is slow to
-  // populate peers (the "greyed-out globe / no stats" symptom). We merge the
-  // magnet's own trackers with a known-good public set, deduped.
+  // `sources` gives Stremio's engine extra peer sources (trackers + DHT).
   const allTrackers = [...new Set([...(c.trackers || []), ...PUBLIC_TRACKERS])];
   const sources = [...allTrackers.map((t) => `tracker:${t}`), `dht:${c.infohash}`];
 
   return {
     name: `minitor\n⬇ ${badge}`,
     title: `${name}\n${stats}${flagLine}`,
-    // infoHash -> Stremio streams it via its own engine (instant, reliable).
+    // infoHash + fileIdx -> Stremio streams it via its own engine and binds its
+    // stats to a concrete file (without fileIdx the stats globe stays grey).
+    // 0 is correct for single-video torrents; Stremio re-selects the largest
+    // file if 0 isn't the video.
     infoHash: c.infohash,
+    fileIdx: 0,
     sources,
-    behaviorHints: { bingeGroup: `minitor-${c.infohash}` },
+    behaviorHints: {
+      bingeGroup: `minitor-${c.infohash}`,
+      filename: name,
+    },
   };
 }
 
