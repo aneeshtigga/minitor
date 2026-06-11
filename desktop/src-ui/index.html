@@ -222,19 +222,34 @@
   $('btn-refresh').onclick = refreshDeps;
 
   // ---- mode toggle ----
+  let switching = false;   // true while the sidecar restarts in a new mode
   for (const m of ['direct', 'cache']) {
     $('mode-' + m).onclick = () => {
+      if (switching) return;
       selectedMode = m;
       $('mode-direct').classList.toggle('active', m === 'direct');
       $('mode-cache').classList.toggle('active', m === 'cache');
       $('cache-hint').style.display = m === 'cache' ? '' : 'none';
-      // If running, switching mode restarts the server in the new mode.
-      if ($('btn-stop').style.display !== 'none') startServer();
+      // If running, switching mode restarts the server in the new mode — show a
+      // "switching" indicator until it's ready again.
+      if ($('btn-stop').style.display !== 'none') {
+        switching = true;
+        renderSwitching();
+        startServer();
+      }
     };
   }
 
   // ---- service ----
+  function renderSwitching() {
+    $('dot-run').classList.remove('ok');
+    $('run-text').innerHTML = '<span class="spinner"></span> Switching to ' + selectedMode + '…';
+    $('btn-start').style.display = 'none';
+    $('btn-stop').style.display = 'none';
+    $('links').style.display = 'none';
+  }
   function renderRunning(running) {
+    if (switching) return renderSwitching();   // hold the indicator until ready
     setDot('dot-run', running);
     $('run-text').textContent = running ? 'Running (' + selectedMode + ')' : 'Stopped';
     $('btn-start').style.display = running ? 'none' : '';
@@ -244,6 +259,8 @@
 
   async function refreshStatus() {
     const s = await invoke('status');
+    // The switch is complete once the service reports running in the target mode.
+    if (switching && s.running && s.mode === selectedMode) switching = false;
     if (s.running) {
       selectedMode = s.mode;
       // keep the mode toggle in sync with what's actually running (e.g. the
