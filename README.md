@@ -15,6 +15,8 @@ Mostly a learning project — a hobbyist's peek at how debrid services
 
 `Stremio addon` · `Jackett / Torznab` · `qBittorrent` · `self-hosted` · `beta`
 
+**macOS · Windows · Linux**
+
 </div>
 
 ---
@@ -46,15 +48,23 @@ Set with `STREAM_MODE` (or the toggle in the desktop app):
 
 <div align="center">
 
-### [ ↓ Download the latest release ](../../releases/latest)
+[![Download for macOS](https://img.shields.io/badge/macOS-Apple_Silicon-000000?style=for-the-badge&logo=apple&logoColor=white)](../../releases/latest/download/Minitor-macOS-arm64.dmg)
+&nbsp;
+[![Download for Windows](https://img.shields.io/badge/Windows-x64-0078D6?style=for-the-badge&logo=windows&logoColor=white)](../../releases/latest/download/Minitor-Windows-x64-setup.exe)
+&nbsp;
+[![Download for Linux](https://img.shields.io/badge/Linux-AppImage-FCC624?style=for-the-badge&logo=linux&logoColor=black)](../../releases/latest/download/Minitor-Linux-x86_64.AppImage)
+
+<sub>
+also:
+<a href="../../releases/latest/download/Minitor-Windows-x64.msi">Windows .msi</a> ·
+<a href="../../releases/latest/download/Minitor-Linux-x86_64.deb">Linux .deb</a> ·
+<a href="../../releases/latest/download/Minitor-Linux-x86_64.rpm">.rpm</a> ·
+<a href="../../releases/latest">all releases</a>
+<br>
+Buttons always grab the <b>latest release</b>. Intel Macs: run from source.
+</sub>
 
 </div>
-
-| OS | File | Notes |
-|----|------|-------|
-| macOS *(Apple Silicon)* | `Minitor_<v>_aarch64.dmg` | Intel Macs: run from source |
-| Windows *(x64)* | `Minitor_<v>_x64-setup.exe` / `.msi` | |
-| Linux *(x64)* | `Minitor_<v>_amd64.AppImage` / `.deb` | |
 
 The app is a small control panel that tries to handle the setup for you:
 

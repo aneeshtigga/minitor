@@ -101,6 +101,23 @@ jobs:
           echo "Collected:"; ls -lh artifacts
           [ -n "$(ls -A artifacts)" ] || { echo "::error::No installer files matched."; exit 1; }
 
+          # Also create VERSION-LESS alias copies with stable names, so the README
+          # can link to /releases/latest/download/<stable-name> and never go stale.
+          # The versioned originals stay too.
+          cd artifacts
+          case "${{ matrix.platform }}" in
+            macos)
+              cp *.dmg                Minitor-macOS-arm64.dmg ;;
+            windows)
+              cp *-setup.exe          Minitor-Windows-x64-setup.exe
+              cp *.msi                Minitor-Windows-x64.msi ;;
+            linux)
+              cp *.AppImage           Minitor-Linux-x86_64.AppImage
+              cp *.deb                Minitor-Linux-x86_64.deb
+              cp *.rpm                Minitor-Linux-x86_64.rpm ;;
+          esac
+          echo "After aliases:"; ls -lh
+
       - name: Upload to Release
         uses: softprops/action-gh-release@v2
         with:
