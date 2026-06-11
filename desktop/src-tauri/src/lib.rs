@@ -168,9 +168,10 @@ fn show_tray(app: &AppHandle) {
         let console = MenuItem::with_id(app, "open", "Open Minitor Console", true, None::<&str>)?;
         let minitor_web = MenuItem::with_id(app, "open_minitor", "Open Minitor web interface", true, None::<&str>)?;
         let qbit_web = MenuItem::with_id(app, "open_qbit", "Open qBittorrent web interface", true, None::<&str>)?;
+        let jackett_web = MenuItem::with_id(app, "open_jackett", "Open Jackett web interface", true, None::<&str>)?;
         let sep = PredefinedMenuItem::separator(app)?;
         let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
-        Menu::with_items(app, &[&console, &minitor_web, &qbit_web, &sep, &quit])
+        Menu::with_items(app, &[&console, &minitor_web, &qbit_web, &jackett_web, &sep, &quit])
     })();
     let Ok(menu) = menu else { return };
 
@@ -183,6 +184,9 @@ fn show_tray(app: &AppHandle) {
             }
             "open_qbit" => {
                 let _ = app.opener().open_url("http://127.0.0.1:8080", None::<&str>);
+            }
+            "open_jackett" => {
+                let _ = app.opener().open_url("http://127.0.0.1:9117", None::<&str>);
             }
             "quit" => {
                 server::stop(app);

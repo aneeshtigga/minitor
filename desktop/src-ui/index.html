@@ -133,6 +133,11 @@
         <span class="url" id="url-qbit"></span>
         <button class="ghost copy" data-copy="url-qbit">Copy</button>
       </div>
+      <div class="link">
+        <span class="label">Jackett</span>
+        <span class="url" id="url-jackett"></span>
+        <button class="ghost copy" data-copy="url-jackett">Copy</button>
+      </div>
       <p class="muted" style="margin:12px 0 0">
         Paste the <b>Addon URL</b> into Stremio → Add-ons → search box → Install.
       </p>
@@ -294,6 +299,7 @@
     $('url-addon').textContent = s.addon_url;
     $('url-minitor').textContent = s.public_url;
     $('url-qbit').textContent = s.qbittorrent_url;
+    $('url-jackett').textContent = s.jackett_url;
   }
 
   async function startServer() {
