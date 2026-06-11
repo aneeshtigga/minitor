@@ -38,6 +38,27 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Single source of truth: derive the app version from the git tag (v0.4.1
+      # -> 0.4.1) and stamp it into tauri.conf.json + Cargo.toml so the built
+      # installers are ALWAYS named to match the release. (On manual runs with
+      # no tag, the committed version is kept.)
+      - name: Sync version to tag
+        shell: bash
+        run: |
+          REF="${GITHUB_REF_NAME:-}"
+          if [[ "$REF" =~ ^v[0-9]+\.[0-9]+\.[0-9]+ ]]; then
+            VER="${REF#v}"
+            echo "Stamping version $VER (from tag $REF)"
+            # tauri.conf.json: top-level "version": "x.y.z"
+            perl -0pi -e 's/("version"\s*:\s*)"[0-9]+\.[0-9]+\.[0-9]+"/${1}"'"$VER"'"/' desktop/src-tauri/tauri.conf.json
+            # Cargo.toml: the [package] version (first `version = "..."`)
+            perl -0pi -e 's/^version = "[0-9]+\.[0-9]+\.[0-9]+"/version = "'"$VER"'"/m' desktop/src-tauri/Cargo.toml
+            grep -H '"version"' desktop/src-tauri/tauri.conf.json | head -1
+            grep -H '^version' desktop/src-tauri/Cargo.toml | head -1
+          else
+            echo "No version tag on this ref ($REF) — keeping committed version."
+          fi
+
       - name: Set up Node
         uses: actions/setup-node@v4
         with:
