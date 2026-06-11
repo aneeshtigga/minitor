@@ -184,18 +184,25 @@ function looksRelevant(name, titleWords, year) {
  * a ~12s plugin search. This is what makes Torrentio/TPB+ feel fast — they
  * cache listings. Keyed by the primary query string; entries expire after TTL.
  */
-const resultCache = new Map(); // query -> { at: epochMs, candidates }
-const RESULT_TTL_MS = 30 * 60 * 1000; // 30 minutes
+const resultCache = new Map(); // query -> { at: epochMs, ttl, candidates }
+const RESULT_TTL_MS = 30 * 60 * 1000; // 30 minutes — healthy result sets
+// Low-confidence results (empty, or a snapshot where every candidate reports 0
+// seeders — which usually means the indexer hiccuped, not that the title is
+// dead) get a short TTL so a momentarily-degraded listing self-heals on the
+// next visit instead of being frozen for 30 minutes. This is the fix for the
+// "only one SD stream showed up" class of bug, where a transient 0-seeder
+// snapshot got memoized and the good 1080p result stayed hidden.
+const RESULT_TTL_SHORT_MS = 60 * 1000; // 1 minute
 
 // Date.now() is fine in normal runtime (only forbidden inside Workflow scripts).
 function cacheGet(key) {
   const hit = resultCache.get(key);
-  if (hit && Date.now() - hit.at < RESULT_TTL_MS) return hit.candidates;
+  if (hit && Date.now() - hit.at < hit.ttl) return hit.candidates;
   if (hit) resultCache.delete(key); // expired
   return null;
 }
-function cacheSet(key, candidates) {
-  resultCache.set(key, { at: Date.now(), candidates });
+function cacheSet(key, candidates, ttl = RESULT_TTL_MS) {
+  resultCache.set(key, { at: Date.now(), ttl, candidates });
 }
 
 // Limit how many page-URL resolutions run at once (apibay/sites rate-limit).
@@ -351,7 +358,10 @@ export async function searchTorrents(queries, match = {}) {
       b.seeders - a.seeders,
   );
 
-  // Only cache non-empty results (don't memoize a transient empty search).
-  if (candidates.length) cacheSet(cacheKey, candidates);
+  // Cache with a TTL scaled to confidence: a healthy set (something is actually
+  // seeded) sticks for the full window; an empty set or an all-zero-seeder
+  // snapshot (likely an indexer hiccup) gets a short TTL so it re-queries soon.
+  const healthy = candidates.some((c) => c.seeders > 0);
+  cacheSet(cacheKey, candidates, healthy ? RESULT_TTL_MS : RESULT_TTL_SHORT_MS);
   return candidates;
 }

@@ -30,6 +30,10 @@ const STREAM_MODE = (process.env.STREAM_MODE || 'direct').toLowerCase() === 'cac
 
 export const config = {
   port: Number(process.env.PORT || 11470),
+  // Interface to bind to. Defaults to loopback so the addon (and the
+  // qBittorrent Web UI it proxies) aren't exposed to the LAN. Set BIND_HOST to
+  // 0.0.0.0 (and PUBLIC_URL to your LAN IP) when Stremio runs on a phone/TV.
+  bindHost: process.env.BIND_HOST || '127.0.0.1',
   publicUrl: clean(process.env.PUBLIC_URL || `http://127.0.0.1:${process.env.PORT || 11470}`),
 
   streamMode: STREAM_MODE,

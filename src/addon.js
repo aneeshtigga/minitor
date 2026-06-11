@@ -36,6 +36,19 @@ import { searchTorrents } from './search.js';
 
 export const addonRouter = express.Router();
 
+// Overall budget for the live-search half of a /stream request. Cinemeta and
+// Jackett each have their own per-call timeouts, but a hung resolve + slow
+// search could still pile up; this caps the whole thing so Stremio gets an
+// answer (even if just the cached streams) instead of a request that never
+// returns and ties up a worker.
+const STREAM_SEARCH_BUDGET_MS = 25_000;
+function withTimeout(promise, ms, label) {
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms).unref()),
+  ]);
+}
+
 /**
  * Stremio addon protocol:
  *
@@ -84,12 +97,31 @@ addonRouter.get('/manifest.json', (_req, res) => res.json(MANIFEST));
  * `minitor:<infohash>` stream url; when the user clicks it the /stream handler
  * (or /play) looks the magnet up here and adds it to the cache on demand.
  */
-const pendingMagnets = new Map(); // infohash -> { magnet, name, quality }
+// Bounded LRU + TTL so a long-running instance can't leak: every search result
+// is remembered here, but an entry is only needed in the brief window between
+// Stremio listing a stream and the user clicking it. Map preserves insertion
+// order, so the first key is the least-recently-used.
+const pendingMagnets = new Map(); // infohash -> { at, info }
+const PENDING_MAX = 2000;
+const PENDING_TTL_MS = 60 * 60 * 1000; // 1 hour
+
 export function rememberMagnet(infohash, info) {
-  pendingMagnets.set(infohash.toLowerCase(), info);
+  const key = infohash.toLowerCase();
+  pendingMagnets.delete(key); // re-insert so it moves to the most-recent end
+  pendingMagnets.set(key, { at: Date.now(), info });
+  // Evict oldest entries once over capacity.
+  while (pendingMagnets.size > PENDING_MAX) {
+    pendingMagnets.delete(pendingMagnets.keys().next().value);
+  }
 }
 export function recallMagnet(infohash) {
-  return pendingMagnets.get(infohash.toLowerCase()) || null;
+  const hit = pendingMagnets.get(infohash.toLowerCase());
+  if (!hit) return null;
+  if (Date.now() - hit.at > PENDING_TTL_MS) {
+    pendingMagnets.delete(infohash.toLowerCase());
+    return null;
+  }
+  return hit.info;
 }
 
 // ---- posters / meta helpers ----
@@ -262,17 +294,20 @@ addonRouter.get('/stream/:type/:id.json', async (req, res) => {
       }
     }
 
-    // (b2) Live search via the user's qBittorrent plugins.
+    // (b2) Live search via the user's qBittorrent plugins. Bounded by an overall
+    // timeout so a hung Cinemeta/Jackett can't block the request indefinitely;
+    // on timeout we fall through to the catch and return whatever (b1) cached.
     try {
-      const meta = await resolveImdb(type, id);
+      const meta = await withTimeout(resolveImdb(type, id), STREAM_SEARCH_BUDGET_MS, 'Cinemeta resolve');
       const queries = searchQueries(meta);
       // Pass the title + year so search.js can anchor relevance (avoids "Her"
       // matching "HERO"/"Her Granddaughter"). For series we leave year null —
       // the SxxEyy filter below disambiguates the episode instead.
-      const candidates = await searchTorrents(queries, {
-        title: meta.name,
-        year: isEpisode ? null : meta.year,
-      });
+      const candidates = await withTimeout(
+        searchTorrents(queries, { title: meta.name, year: isEpisode ? null : meta.year }),
+        STREAM_SEARCH_BUDGET_MS,
+        'torrent search',
+      );
       const cleanTitle = `${meta.name}${meta.year ? ` (${meta.year})` : ''}${isEpisode ? ` S${String(season).padStart(2, '0')}E${String(episode).padStart(2, '0')}` : ''}`;
 
       // For an episode page, keep only torrents whose name parses to the SAME

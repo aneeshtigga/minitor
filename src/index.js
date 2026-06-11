@@ -57,7 +57,7 @@ async function main() {
     console.warn(`  Start qBittorrent, enable its Web UI (Tools > Options > Web UI), and check QBIT_* in .env`);
   }
 
-  const server = app.listen(config.port, () => {
+  const server = app.listen(config.port, config.bindHost, () => {
     console.log(`\n  minitor running`);
     console.log(`  UI:       ${config.publicUrl}/`);
     console.log(`  Addon:    ${config.publicUrl}/manifest.json`);
