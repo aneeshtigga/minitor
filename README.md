@@ -54,6 +54,8 @@ Set with `STREAM_MODE` (or the toggle in the desktop app):
 &nbsp;
 [![Download for Linux](https://img.shields.io/badge/Linux-AppImage-FCC624?style=for-the-badge&logo=linux&logoColor=black)](../../releases/latest/download/Minitor-Linux-x86_64.AppImage)
 
+[![Total downloads](https://img.shields.io/github/downloads/aneeshtigga/minitor/total?style=flat&logo=github&label=downloads&color=success)](../../releases)
+
 <sub>
 also:
 <a href="../../releases/latest/download/Minitor-Windows-x64.msi">Windows .msi</a> ·
