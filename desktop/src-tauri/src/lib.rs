@@ -82,14 +82,21 @@ fn set_autostart(app: AppHandle, enabled: bool) -> Result<(), String> {
     res.map_err(|e| e.to_string())
 }
 
+// check_deps / install_dep shell out to winget/brew/apt, which can take several
+// seconds. They're `async` + spawn_blocking so the work runs off the UI thread —
+// otherwise a sync command blocks the main thread and freezes the window.
 #[tauri::command]
-fn check_deps() -> deps::DepStatus {
-    deps::check()
+async fn check_deps() -> deps::DepStatus {
+    tauri::async_runtime::spawn_blocking(deps::check)
+        .await
+        .unwrap_or_default()
 }
 
 #[tauri::command]
-fn install_dep(name: String) -> Result<String, String> {
-    deps::install(&name)
+async fn install_dep(name: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || deps::install(&name))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -235,13 +242,24 @@ pub fn run() {
             // Auto-start the service in direct mode on launch ONLY when its
             // dependency (Jackett — the search backend) is already installed.
             // On a fresh machine we leave it stopped so the user can install
-            // deps / finish setup first, instead of spinning up a server that
-            // can't search. Once Jackett is present, every later launch comes up
-            // ready with no Start click.
-            if deps::check().jackett {
-                let handle = app.handle().clone();
-                let _ = launch_service(&handle, "direct");
-            }
+            // deps / finish setup first.
+            //
+            // deps::check() shells out to winget/brew (seconds), so we run it on a
+            // background thread — doing it inline here would block the main thread
+            // and freeze the window before it can even paint.
+            let handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                let jackett = tauri::async_runtime::spawn_blocking(|| deps::check().jackett)
+                    .await
+                    .unwrap_or(false);
+                if jackett {
+                    // Tray creation + sidecar spawn back on the main thread.
+                    let h = handle.clone();
+                    let _ = handle.run_on_main_thread(move || {
+                        let _ = launch_service(&h, "direct");
+                    });
+                }
+            });
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

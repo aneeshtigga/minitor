@@ -14,7 +14,22 @@
 use serde::Serialize;
 use std::process::Command;
 
-#[derive(Serialize, Clone)]
+/// Build a Command that never flashes a console window on Windows. Every
+/// subprocess we spawn (where/winget/reg/brew/apt…) goes through this; without
+/// CREATE_NO_WINDOW, each one pops a cmd window on Windows. No-op elsewhere.
+pub(crate) fn command(program: &str) -> Command {
+    #[allow(unused_mut)]
+    let mut c = Command::new(program);
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        c.creation_flags(CREATE_NO_WINDOW);
+    }
+    c
+}
+
+#[derive(Serialize, Clone, Default)]
 pub struct DepStatus {
     /// Whether a usable package manager is present (Homebrew / winget / apt…).
     pub brew: bool,
@@ -32,7 +47,7 @@ pub const QBITTORRENT_URL: &str = "https://www.qbittorrent.org/download";
 #[allow(dead_code)]
 fn has_cmd(cmd: &str) -> bool {
     let probe = if cfg!(windows) { "where" } else { "which" };
-    Command::new(probe)
+    command(probe)
         .arg(cmd)
         .output()
         .map(|o| o.status.success())
@@ -61,7 +76,7 @@ mod platform {
 
     fn brew_list_has(name: &str) -> bool {
         let Some(brew) = brew_path() else { return false };
-        Command::new(&brew)
+        command(&brew)
             .args(["list", name])
             .output()
             .map(|o| o.status.success())
@@ -89,7 +104,7 @@ mod platform {
 
     pub fn start_jackett_service() {
         if let Some(brew) = brew_path() {
-            let _ = Command::new(&brew).args(["services", "start", "jackett"]).output();
+            let _ = command(&brew).args(["services", "start", "jackett"]).output();
         }
     }
 }
@@ -105,7 +120,7 @@ mod platform {
 
     /// winget reports installed packages; grep its list output.
     fn winget_has(id: &str) -> bool {
-        Command::new("winget")
+        command("winget")
             .args(["list", "--id", id, "-e"])
             .output()
             .map(|o| o.status.success() && String::from_utf8_lossy(&o.stdout).contains(id))
@@ -189,13 +204,13 @@ mod platform {
 
     pub fn start_jackett_service() {
         // Best-effort: try a systemd user/system service if packaged that way.
-        let _ = Command::new("systemctl").args(["--user", "start", "jackett"]).output();
+        let _ = command("systemctl").args(["--user", "start", "jackett"]).output();
     }
 }
 
 /// Shared install runner: spawn `cmd args…`, map success/failure to Result.
 fn run(cmd: &str, args: &[&str], name: &str) -> Result<String, String> {
-    let out = Command::new(cmd)
+    let out = command(cmd)
         .args(args)
         .output()
         .map_err(|e| format!("Failed to run {cmd}: {e}"))?;
