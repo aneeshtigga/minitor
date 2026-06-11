@@ -26,5 +26,10 @@
     "@tauri-apps/cli": "^2.11.2",
     "@yao-pkg/pkg": "^6.20.0",
     "esbuild": "^0.28.0"
+  },
+  "overrides": {
+    "@yao-pkg/pkg": {
+      "into-stream": "6"
+    }
   }
 }
