@@ -103,7 +103,10 @@ jobs:
         working-directory: desktop
         run: npm run tauri build
 
-      # Collect every installer Tauri produced (.dmg / .msi / .exe / .deb / .AppImage / .rpm).
+      # Collect installers under STABLE, version-less names so the README can
+      # link to /releases/latest/download/<name> and never go stale. Tauri bakes
+      # the version into its filenames; we rename to one canonical name per
+      # artifact (no versioned duplicates — the release tag/title carries the version).
       - name: Collect installers
         shell: bash
         run: |
@@ -114,30 +117,24 @@ jobs:
             echo "Contents of target/release:"; ls -la desktop/src-tauri/target/release || true
             exit 1
           fi
-          # Installers live under bundle/ — scoping here avoids the raw app binary.
-          find "$BUNDLE" -type f \
-            \( -name '*.dmg' -o -name '*.msi' -o -name '*.exe' \
-               -o -name '*.deb' -o -name '*.AppImage' -o -name '*.rpm' \) \
-            -print -exec cp {} artifacts/ \;
-          echo "Collected:"; ls -lh artifacts
-          [ -n "$(ls -A artifacts)" ] || { echo "::error::No installer files matched."; exit 1; }
-
-          # Also create VERSION-LESS alias copies with stable names, so the README
-          # can link to /releases/latest/download/<stable-name> and never go stale.
-          # The versioned originals stay too.
-          cd artifacts
+          # grab(<glob> <dest>): copy the single matching installer to a stable name.
+          grab() {
+            local src; src=$(find "$BUNDLE" -type f -name "$1" | head -1)
+            [ -n "$src" ] || { echo "::error::No installer matched $1"; exit 1; }
+            cp "$src" "artifacts/$2"
+          }
           case "${{ matrix.platform }}" in
             macos)
-              cp *.dmg                Minitor-macOS-arm64.dmg ;;
+              grab '*.dmg'        Minitor-macOS-arm64.dmg ;;
             windows)
-              cp *-setup.exe          Minitor-Windows-x64-setup.exe
-              cp *.msi                Minitor-Windows-x64.msi ;;
+              grab '*-setup.exe'  Minitor-Windows-x64-setup.exe
+              grab '*.msi'        Minitor-Windows-x64.msi ;;
             linux)
-              cp *.AppImage           Minitor-Linux-x86_64.AppImage
-              cp *.deb                Minitor-Linux-x86_64.deb
-              cp *.rpm                Minitor-Linux-x86_64.rpm ;;
+              grab '*.AppImage'   Minitor-Linux-x86_64.AppImage
+              grab '*.deb'        Minitor-Linux-x86_64.deb
+              grab '*.rpm'        Minitor-Linux-x86_64.rpm ;;
           esac
-          echo "After aliases:"; ls -lh
+          echo "Collected:"; ls -lh artifacts
 
       - name: Upload to Release
         uses: softprops/action-gh-release@v2
