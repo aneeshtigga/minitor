@@ -221,7 +221,14 @@
 
   async function refreshStatus() {
     const s = await invoke('status');
-    if (s.running) selectedMode = s.mode;
+    if (s.running) {
+      selectedMode = s.mode;
+      // keep the mode toggle in sync with what's actually running (e.g. the
+      // service auto-started in direct mode on launch).
+      $('mode-direct').classList.toggle('active', s.mode === 'direct');
+      $('mode-cache').classList.toggle('active', s.mode === 'cache');
+      $('cache-hint').style.display = s.mode === 'cache' ? '' : 'none';
+    }
     renderRunning(s.running);
     $('url-addon').textContent = s.addon_url;
     $('url-minitor').textContent = s.public_url;
