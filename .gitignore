@@ -4,3 +4,10 @@ data/
 *.log
 .DS_Store
 .claude/
+
+# build artifacts
+dist/
+desktop/src-tauri/target/
+desktop/src-tauri/binaries/
+desktop/src-tauri/gen/
+

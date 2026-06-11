@@ -1,0 +1,14 @@
+{
+  "name": "minitor-desktop",
+  "version": "0.4.0",
+  "private": true,
+  "description": "Minitor desktop control panel (Tauri)",
+  "scripts": {
+    "tauri": "tauri",
+    "dev": "tauri dev",
+    "build": "tauri build"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.11.2"
+  }
+}

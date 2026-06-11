@@ -1,0 +1,37 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Minitor",
+  "version": "0.4.0",
+  "identifier": "org.minitor.desktop",
+  "build": {
+    "frontendDist": "../src-ui"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [
+      {
+        "title": "Minitor",
+        "width": 520,
+        "height": 720,
+        "minWidth": 460,
+        "minHeight": 600,
+        "resizable": true
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["dmg"],
+    "icon": [
+      "icons/icon.icns",
+      "icons/icon.png"
+    ],
+    "externalBin": ["binaries/minitor"],
+    "macOS": {
+      "minimumSystemVersion": "10.15"
+    }
+  }
+}

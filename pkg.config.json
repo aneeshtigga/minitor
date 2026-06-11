@@ -1,0 +1,8 @@
+{
+  "assets": [
+    "public/**/*"
+  ],
+  "options": [
+    "no-warnings"
+  ]
+}

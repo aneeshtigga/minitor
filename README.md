@@ -1,81 +1,77 @@
-# minitor
+# Minitor
 
-A self-hosted **Stremio addon** that searches torrents via your qBittorrent
-search plugins and streams them — a learning POC for how P2P streaming addons
-(Torrentio/TPB+/TorBox) work under the hood.
+A self-hosted **Stremio addon** that searches torrents via **Jackett** (Torznab)
+and streams them — either through **Stremio's own engine** or by **downloading
+them locally with qBittorrent** and serving the file back over HTTP.
 
-**Two streaming modes:**
+A learning POC for how P2P streaming addons (Torrentio / TPB+ / TorBox) work.
 
-1. **infoHash (default)** — minitor hands Stremio the torrent's `infoHash` and
-   **Stremio's own streaming engine** plays it directly (same as Torrentio).
-   Instant, reliable, proper sequential playback; Stremio caches what it
-   downloads, so there's no double-download. minitor stays a pure search addon.
-2. **Local cache (`/play`)** — for torrents you've explicitly cached via the web
-   UI, minitor serves them from local disk over HTTP range requests (instant,
-   permanent). This is the qBittorrent download-and-serve path.
+## Two streaming modes (`STREAM_MODE`)
 
-> **Reality check:** a *single local machine* can't make the **first** play of a
-> torrent faster — it's gated by the same peers/seeders either way, plus your
-> home upload/NAT. TorBox is fast because its cache is *shared across thousands
-> of users* in a datacenter. What you learn here: the BitTorrent + Stremio addon
-> internals (catalog vs stream, infoHash streaming, sequential piece selection,
-> metadata resolution, swarm reachability).
+| Mode | What happens | Needs |
+|------|--------------|-------|
+| **`direct`** (default) | Minitor hands Stremio the torrent's `infoHash`; **Stremio's own engine** streams it (like Torrentio). No local download. | Jackett |
+| **`cache`** | Minitor adds the torrent to **qBittorrent**, downloads it to disk, and range-streams the local file (`/play`) — a permanent local copy, stream-while-downloading. | Jackett **+** qBittorrent |
 
-## Architecture
+The manifest id/name differ per mode (`Minitor` vs `Minitor (cache)`), so you can
+run both side-by-side in Stremio.
 
-```
-  Stremio ──/manifest.json──▶ minitor (addon)
-          ──/stream/….json──▶ resolve IMDb id (Cinemeta) -> search qBittorrent
-                               plugins -> ranked streams, each carrying infoHash
-          ──click stream────▶ Stremio's OWN engine streams the torrent directly
+## Easiest way to run it — the macOS app
 
-  (optional local-cache path, for items cached via the web UI:)
-          ──GET /play/… ─────▶ minitor range-streams a local file (HTTP 206)
-                                     │  qBittorrent Web API downloads it
-                                     ▼  file on disk (DOWNLOAD_DIR)
-```
+Download **`Minitor_<version>_aarch64.dmg`** (Apple Silicon) or **`_x64.dmg`**
+(Intel) from the [Releases](../../releases) page. The app is a control panel that:
 
-| File                  | Job                                                            |
-|-----------------------|---------------------------------------------------------------|
-| `src/addon.js`        | manifest/catalog/meta/stream — the Stremio bridge             |
-| `src/cinemeta.js`     | IMDb id -> title/year (so we can search torrents)             |
-| `src/search.js`       | qBittorrent plugin search, ranking, result cache              |
-| `src/resolve-magnet.js`| page-URL -> magnet (ThePirateBay via apibay, others via HTML)|
-| `src/qbittorrent.js`  | qBittorrent Web API client (search, add, piece control)       |
-| `src/cache.js`        | local cache index + piece-aware status                        |
-| `src/stream.js`       | `/play/:hash` — local HTTP range/seek streaming               |
-| `src/archive.js`      | Internet Archive search (legal Creative Commons content)      |
-| `src/api.js`          | control API used by the web UI                                |
-| `src/util.js`         | quality/lang/tag detection, infohash (base32->hex), formatting|
-| `public/index.html`   | web UI: paste a magnet / search / manually cache              |
+- checks for **Homebrew → Jackett → qBittorrent** and installs the missing ones,
+- auto-configures Jackett (finds its API key, adds a few popular public indexers),
+- runs the Minitor service with a **Direct / Cache** toggle and **Start / Stop**,
+- shows the **addon URL** to paste into Stremio (plus the Minitor and qBittorrent
+  Web UI links),
+- stops the service when you quit.
 
-## Setup
+### First launch (unsigned app)
 
-### 1. Install + configure qBittorrent
+The app isn't notarized (no Apple Developer cert), so Gatekeeper will block the
+first open. After dragging **Minitor** to **Applications**, either:
+
+- **double-click `unquarantine.command`** (shipped alongside the app), or
+- run in Terminal:
+  ```bash
+  xattr -dr com.apple.quarantine /Applications/Minitor.app
+  codesign --force --deep --sign - /Applications/Minitor.app
+  ```
+
+Then open Minitor normally. (You can also right-click the app → **Open** the
+first time.)
+
+> One manual step remains: for **Cache mode**, enable qBittorrent's Web UI
+> (qBittorrent → Settings → Web UI, port 8080). Direct mode needs nothing extra.
+
+## Run from source (any OS)
+
+### 1. Install + run Jackett (and qBittorrent for cache mode)
 
 ```bash
-brew install --cask qbittorrent
+brew install jackett                 # search backend (formula)
+brew services start jackett          # http://127.0.0.1:9117
+brew install --cask qbittorrent      # only for STREAM_MODE=cache
 ```
 
-Open qBittorrent → **Settings → Web UI**:
-- ✅ Enable the Web User Interface (Remote control)
-- Port: **8080**
-- Set a username/password (default assumed: `admin` / `adminadmin`)
-- (Optional, smoother local dev) ✅ "Bypass authentication for clients on localhost"
+In the Jackett UI (`http://127.0.0.1:9117`) add a few indexers and copy the API
+key (top-right). For qBittorrent, enable **Settings → Web UI** (port 8080).
 
-Set **Settings → Downloads → Default Save Path** to match `DOWNLOAD_DIR` in `.env`.
-
-### 2. Configure minitor
+### 2. Configure
 
 ```bash
-cp .env.example .env      # then edit if your qBittorrent port/creds differ
+cp .env.example .env      # then edit
 ```
 
 Key vars (`.env`):
-- `QBIT_URL`, `QBIT_USER`, `QBIT_PASS` — must match qBittorrent's Web UI
-- `DOWNLOAD_DIR` — must match qBittorrent's save path (minitor reads files here)
-- `PUBLIC_URL` — `http://127.0.0.1:11470` for same-machine; use your LAN IP if
-  Stremio runs on a phone/TV (e.g. `http://192.168.1.50:11470`)
+- `STREAM_MODE` — `direct` (default) or `cache`
+- `JACKETT_URL`, `JACKETT_API_KEY` — your Jackett instance + key
+- `QBIT_URL`, `QBIT_USER`, `QBIT_PASS` — qBittorrent Web UI (cache mode)
+- `DOWNLOAD_DIR` — must match qBittorrent's save path (cache mode)
+- `PUBLIC_URL` — `http://127.0.0.1:11472`; use your LAN IP if Stremio runs on a
+  phone/TV (e.g. `http://192.168.1.50:11472`)
 
 ### 3. Run
 
@@ -84,44 +80,59 @@ npm install
 npm start          # or: npm run dev  (auto-restart on file changes)
 ```
 
-Open the UI at **http://127.0.0.1:11470/**.
-
 ### 4. Install the addon in Stremio
 
-In Stremio → **Addons** → paste into the search box:
+Stremio → **Add-ons** → paste into the search box → **Install**:
 
 ```
-http://127.0.0.1:11470/manifest.json
+http://127.0.0.1:11472/manifest.json
 ```
 
-→ **Install**.
+Then open any movie/series — Minitor searches Jackett by title (+ year) and lists
+ranked streams inline.
 
-## How to use
+## Building the macOS app yourself
 
-**Paste flow (start here):**
-1. In the UI, paste a magnet link or `.torrent` URL → **Cache it**.
-2. Watch progress. Once a few % is downloaded it shows **playable**.
-3. It now resolves under the Stremio id `minitor:<infohash>` (also shown in UI).
+```bash
+npm install
+npm run build:sidecar:arm64        # bundle + pkg + ad-hoc sign the Node sidecar
+cd desktop && npm install
+npm run tauri build                # -> src-tauri/target/release/bundle/dmg/*.dmg
+```
 
-**Search flow (Internet Archive — all legal content):**
-1. Type a title (e.g. *Night of the Living Dead*, *Big Buck Bunny*) → **Search**.
-2. Click **Cache** on a result. Same pipeline as paste.
+(CI builds both arches automatically — push a `v*` tag, see
+`.github/workflows/release.yml`.)
 
-**Stream URL directly** (e.g. in VLC): `http://127.0.0.1:11470/play/<infohash>`
+## How it works
 
-## How the "stream before fully downloaded" trick works
+```
+  Stremio ──/manifest.json──▶ Minitor (addon)
+          ──/stream/….json──▶ resolve IMDb id (Cinemeta) -> search Jackett
+                               -> rank streams (tier -> seeders -> language)
+   direct ──click stream────▶ Stremio's OWN engine streams via infoHash
+   cache  ──GET /play/… ─────▶ Minitor range-streams a local file (HTTP 206)
+                                     │  qBittorrent downloads it
+                                     ▼  file on disk (DOWNLOAD_DIR)
+```
 
-When minitor adds a torrent it sets **sequential download** + **first/last piece
-priority** in qBittorrent. The `/play/:hash` endpoint also bumps the chosen video
-file to max priority. So bytes arrive roughly front-to-back, and the HTTP range
-server can serve the beginning while the rest is still downloading. Seeking
-forward works once those later bytes land.
+| File / dir            | Job                                                            |
+|-----------------------|----------------------------------------------------------------|
+| `src/addon.js`        | manifest/catalog/meta/stream — the Stremio bridge              |
+| `src/cinemeta.js`     | IMDb id -> title/year (so we can search torrents)              |
+| `src/search.js`       | search, **anchored title+year relevance**, ranking, result cache |
+| `src/jackett.js`      | Jackett Torznab search                                         |
+| `src/jackett-setup.js`| discover API key + auto-add indexers (turnkey)                |
+| `src/resolve-magnet.js`| page-URL -> magnet (apibay / HTML scrape) for the fallback path |
+| `src/qbittorrent.js`  | qBittorrent Web API client (cache mode)                        |
+| `src/cache.js`        | local cache index + piece-aware status (cache mode)           |
+| `src/stream.js`       | `/play/:hash` — local HTTP range/seek streaming (cache mode)  |
+| `desktop/`            | Tauri macOS control-panel app (Rust core + webview UI)        |
 
 ## Notes / limitations (it's a POC)
 
-- IMDb-id (`tt…`) requests just surface whatever's cached — there's no
-  IMDb→torrent search mapping. The reliable path is the `minitor:` id from the UI.
+- **Search quality** depends on which indexers you add in Jackett.
+- A *single local machine* can't make the **first** play of a torrent faster —
+  it's gated by the same peers/seeders either way. TorBox is fast because its
+  cache is shared across thousands of users in a datacenter.
 - No transcoding: the player must support the codec/container (mkv/mp4 mostly fine).
-- Single machine = first-play speed is still swarm-limited (see reality check above).
-- Use only for content you're legally allowed to download (e.g. the Archive's
-  public-domain / Creative Commons library).
+- Use only for content you're legally allowed to download.

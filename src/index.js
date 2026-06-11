@@ -7,6 +7,7 @@ import { qbit } from './qbittorrent.js';
 import { addonRouter } from './addon.js';
 import { streamRouter } from './stream.js';
 import { apiRouter } from './api.js';
+import { bootstrapJackett } from './jackett-setup.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -42,6 +43,11 @@ app.use('/', express.static(path.join(__dirname, '..', 'public')));
 async function main() {
   await cache.load();
 
+  // Turnkey Jackett setup: discover its API key if not supplied, and auto-add
+  // popular indexers if none are configured yet (so search works out of the box
+  // when launched by the desktop app). Best-effort; never blocks startup.
+  await bootstrapJackett().catch(() => {});
+
   // Verify qBittorrent up front so failures are obvious, not mysterious.
   try {
     const v = await qbit.version();
@@ -51,7 +57,7 @@ async function main() {
     console.warn(`  Start qBittorrent, enable its Web UI (Tools > Options > Web UI), and check QBIT_* in .env`);
   }
 
-  app.listen(config.port, () => {
+  const server = app.listen(config.port, () => {
     console.log(`\n  minitor running`);
     console.log(`  UI:       ${config.publicUrl}/`);
     console.log(`  Addon:    ${config.publicUrl}/manifest.json`);
@@ -59,6 +65,18 @@ async function main() {
     console.log(`  Save dir: ${config.downloadDir}\n`);
     console.log(`  Install in Stremio: paste the Addon URL into the addon search box.\n`);
   });
+
+  // Graceful shutdown — when a supervisor (the desktop app) sends SIGTERM/SIGINT,
+  // close the HTTP server cleanly instead of dying mid-request. (qBittorrent
+  // downloads are a separate process and keep running, which is fine.)
+  for (const sig of ['SIGTERM', 'SIGINT']) {
+    process.on(sig, () => {
+      console.log(`\n  ${sig} received — shutting down minitor`);
+      server.close(() => process.exit(0));
+      // Don't hang forever if a connection is stuck.
+      setTimeout(() => process.exit(0), 3000).unref();
+    });
+  }
 }
 
 main().catch((err) => {

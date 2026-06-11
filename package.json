@@ -5,9 +5,13 @@
   "type": "module",
   "description": "Local torrent caching + streaming POC for Stremio (a tiny, self-hosted TorBox-style learning project)",
   "main": "src/index.js",
+  "bin": "src/index.js",
   "scripts": {
     "start": "node src/index.js",
-    "dev": "node --watch src/index.js"
+    "dev": "node --watch src/index.js",
+    "bundle": "esbuild src/index.js --bundle --platform=node --format=cjs --target=node22 --define:import.meta.url=importMetaUrl --banner:js=\"const importMetaUrl=require('url').pathToFileURL(__filename).href;\" --outfile=dist/minitor-bundle.cjs",
+    "build:sidecar:arm64": "npm run bundle && pkg dist/minitor-bundle.cjs --config pkg.config.json --target node22-macos-arm64 --output desktop/src-tauri/binaries/minitor-aarch64-apple-darwin && codesign --force --sign - desktop/src-tauri/binaries/minitor-aarch64-apple-darwin",
+    "build:sidecar:x64": "npm run bundle && pkg dist/minitor-bundle.cjs --config pkg.config.json --target node22-macos-x64 --output desktop/src-tauri/binaries/minitor-x86_64-apple-darwin && codesign --force --sign - desktop/src-tauri/binaries/minitor-x86_64-apple-darwin"
   },
   "engines": {
     "node": ">=18"
@@ -15,5 +19,10 @@
   "dependencies": {
     "dotenv": "^16.4.5",
     "express": "^4.19.2"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.11.2",
+    "@yao-pkg/pkg": "^6.20.0",
+    "esbuild": "^0.28.0"
   }
 }

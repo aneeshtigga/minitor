@@ -14,6 +14,11 @@ function clean(url) {
 const DOWNLOAD_DIR =
   process.env.DOWNLOAD_DIR || path.join(os.homedir(), 'Downloads', 'minitor');
 
+// Where the cache index ("database") lives. Defaults to ./data relative to the
+// working directory, but a parent process (e.g. the desktop app, or a bundled
+// binary whose cwd is unpredictable) can point it at a stable app-data dir.
+const DATA_DIR = process.env.MINITOR_DATA_DIR || path.join(process.cwd(), 'data');
+
 // Streaming mode — the one knob that picks which "version" of minitor runs:
 //   'direct' : hand Stremio the infoHash and let ITS engine stream the torrent
 //              (lightweight, no local download — like Torrentio).
@@ -48,6 +53,6 @@ export const config = {
   downloadDir: DOWNLOAD_DIR,
 
   // local JSON "database" for the cache index
-  dataDir: path.join(process.cwd(), 'data'),
-  dbFile: path.join(process.cwd(), 'data', 'cache.json'),
+  dataDir: DATA_DIR,
+  dbFile: path.join(DATA_DIR, 'cache.json'),
 };

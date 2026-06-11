@@ -1,0 +1,255 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Minitor</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body {
+    font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    margin: 0; background: #0e1117; color: #e6edf3; user-select: none;
+  }
+  header { padding: 18px 22px; border-bottom: 1px solid #21262d; }
+  header h1 { margin: 0; font-size: 19px; letter-spacing: .3px; }
+  header p { margin: 3px 0 0; color: #8b949e; font-size: 12px; }
+  main { padding: 18px 22px; }
+  .card { background: #161b22; border: 1px solid #21262d; border-radius: 10px; padding: 14px 16px; margin-bottom: 16px; }
+  h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .6px; margin: 0 0 12px; color: #8b949e; }
+  button {
+    padding: 9px 16px; border-radius: 8px; border: 1px solid #2ea043;
+    background: #238636; color: #fff; font-size: 14px; cursor: pointer; white-space: nowrap;
+  }
+  button.ghost { background: transparent; border-color: #30363d; color: #c9d1d9; }
+  button.danger { background: transparent; border-color: #f85149; color: #f85149; }
+  button:disabled { opacity: .45; cursor: default; }
+  .muted { color: #8b949e; font-size: 12px; }
+  /* dependency rows */
+  .dep { display: flex; align-items: center; gap: 10px; padding: 8px 0; border-top: 1px solid #21262d; }
+  .dep:first-child { border-top: 0; }
+  .dot { width: 9px; height: 9px; border-radius: 50%; background: #f85149; flex: 0 0 auto; }
+  .dot.ok { background: #2ea043; }
+  .dep .name { flex: 1; }
+  .dep .name small { display: block; color: #8b949e; font-size: 11px; }
+  .dep button { padding: 5px 12px; font-size: 12px; }
+  /* mode toggle */
+  .modes { display: flex; gap: 8px; }
+  .mode { flex: 1; text-align: center; padding: 10px; border: 1px solid #30363d; border-radius: 8px; cursor: pointer; background: #0d1117; }
+  .mode.active { border-color: #1f6feb; background: #1f6feb22; color: #79c0ff; }
+  .mode b { display: block; font-size: 14px; }
+  .mode small { color: #8b949e; font-size: 11px; }
+  .mode.active small { color: #79c0ff; }
+  /* status + links */
+  .status-row { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; }
+  .status-row .big { font-size: 15px; font-weight: 600; }
+  .link { display: flex; align-items: center; gap: 8px; padding: 8px 0; border-top: 1px solid #21262d; }
+  .link:first-of-type { border-top: 0; }
+  .link .label { width: 88px; color: #8b949e; font-size: 12px; flex: 0 0 auto; }
+  .link .url { flex: 1; color: #58a6ff; font-size: 12px; word-break: break-all; cursor: pointer; }
+  .link .copy { font-size: 11px; padding: 3px 9px; }
+  .toast { position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%);
+    background: #238636; color: #fff; padding: 8px 16px; border-radius: 8px; font-size: 13px;
+    opacity: 0; transition: opacity .25s; pointer-events: none; }
+  .toast.show { opacity: 1; }
+  .hint { background: #1f6feb14; border: 1px solid #1f6feb44; border-radius: 8px; padding: 10px 12px; font-size: 12px; color: #a5c9ff; margin-top: 10px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Minitor</h1>
+  <p>Torrent search + streaming for Stremio</p>
+</header>
+<main>
+  <!-- Dependencies -->
+  <div class="card">
+    <h2>Dependencies</h2>
+    <div class="dep">
+      <span class="dot" id="dot-brew"></span>
+      <span class="name">Homebrew <small>package manager (installs the rest)</small></span>
+      <button class="ghost" id="btn-brew" style="display:none">Install guide</button>
+    </div>
+    <div class="dep">
+      <span class="dot" id="dot-jackett"></span>
+      <span class="name">Jackett <small>torrent search backend (required)</small></span>
+      <button class="ghost" id="btn-jackett" style="display:none">Install</button>
+    </div>
+    <div class="dep">
+      <span class="dot" id="dot-qbittorrent"></span>
+      <span class="name">qBittorrent <small>needed for Cache mode only</small></span>
+      <button class="ghost" id="btn-qbittorrent" style="display:none">Install</button>
+    </div>
+    <button class="ghost" id="btn-refresh" style="margin-top:12px;padding:6px 14px;font-size:12px">Refresh</button>
+  </div>
+
+  <!-- Mode -->
+  <div class="card">
+    <h2>Streaming mode</h2>
+    <div class="modes">
+      <div class="mode active" data-mode="direct" id="mode-direct">
+        <b>Direct</b><small>Stremio streams it</small>
+      </div>
+      <div class="mode" data-mode="cache" id="mode-cache">
+        <b>Cache</b><small>download locally</small>
+      </div>
+    </div>
+    <div class="hint" id="cache-hint" style="display:none">
+      Cache mode needs qBittorrent running with its Web UI enabled
+      (Tools → Options → Web UI, port 8080).
+    </div>
+  </div>
+
+  <!-- Service -->
+  <div class="card">
+    <h2>Service</h2>
+    <div class="status-row">
+      <span class="dot" id="dot-run"></span>
+      <span class="big" id="run-text">Stopped</span>
+      <span style="flex:1"></span>
+      <button id="btn-start">Start</button>
+      <button class="danger" id="btn-stop" style="display:none">Stop</button>
+    </div>
+    <div id="links" style="display:none">
+      <div class="link">
+        <span class="label">Addon URL</span>
+        <span class="url" id="url-addon"></span>
+        <button class="ghost copy" data-copy="url-addon">Copy</button>
+      </div>
+      <div class="link">
+        <span class="label">Minitor</span>
+        <span class="url" id="url-minitor"></span>
+        <button class="ghost copy" data-copy="url-minitor">Copy</button>
+      </div>
+      <div class="link">
+        <span class="label">qBittorrent</span>
+        <span class="url" id="url-qbit"></span>
+        <button class="ghost copy" data-copy="url-qbit">Copy</button>
+      </div>
+      <p class="muted" style="margin:12px 0 0">
+        Paste the <b>Addon URL</b> into Stremio → Add-ons → search box → Install.
+      </p>
+    </div>
+  </div>
+</main>
+<div class="toast" id="toast"></div>
+
+<script>
+  const { invoke } = window.__TAURI__.core;
+  const { listen } = window.__TAURI__.event;
+  const { openUrl } = window.__TAURI__.opener;
+
+  let selectedMode = 'direct';
+
+  const $ = (id) => document.getElementById(id);
+  function toast(msg) {
+    const t = $('toast'); t.textContent = msg; t.classList.add('show');
+    setTimeout(() => t.classList.remove('show'), 1600);
+  }
+
+  function setDot(id, ok) { $(id).classList.toggle('ok', !!ok); }
+
+  // ---- dependencies ----
+  async function refreshDeps() {
+    const d = await invoke('check_deps');
+    setDot('dot-brew', d.brew);
+    setDot('dot-jackett', d.jackett);
+    setDot('dot-qbittorrent', d.qbittorrent);
+    // Show install buttons for what's missing (brew gets a guide, not auto-install).
+    $('btn-brew').style.display = d.brew ? 'none' : '';
+    $('btn-jackett').style.display = (d.brew && !d.jackett) ? '' : 'none';
+    $('btn-qbittorrent').style.display = (d.brew && !d.qbittorrent) ? '' : 'none';
+  }
+
+  async function installDep(name) {
+    const btn = $('btn-' + name);
+    const orig = btn.textContent;
+    btn.disabled = true; btn.textContent = 'Installing…';
+    try {
+      await invoke('install_dep', { name });
+      toast(name + ' installed');
+    } catch (e) {
+      toast('Install failed — see Homebrew');
+      console.error(e);
+    } finally {
+      btn.disabled = false; btn.textContent = orig;
+      refreshDeps();
+    }
+  }
+
+  $('btn-jackett').onclick = () => installDep('jackett');
+  $('btn-qbittorrent').onclick = () => installDep('qbittorrent');
+  $('btn-brew').onclick = () => openUrl('https://brew.sh');
+  $('btn-refresh').onclick = refreshDeps;
+
+  // ---- mode toggle ----
+  for (const m of ['direct', 'cache']) {
+    $('mode-' + m).onclick = () => {
+      selectedMode = m;
+      $('mode-direct').classList.toggle('active', m === 'direct');
+      $('mode-cache').classList.toggle('active', m === 'cache');
+      $('cache-hint').style.display = m === 'cache' ? '' : 'none';
+      // If running, switching mode restarts the server in the new mode.
+      if ($('btn-stop').style.display !== 'none') startServer();
+    };
+  }
+
+  // ---- service ----
+  function renderRunning(running) {
+    setDot('dot-run', running);
+    $('run-text').textContent = running ? 'Running (' + selectedMode + ')' : 'Stopped';
+    $('btn-start').style.display = running ? 'none' : '';
+    $('btn-stop').style.display = running ? '' : 'none';
+    $('links').style.display = running ? '' : 'none';
+  }
+
+  async function refreshStatus() {
+    const s = await invoke('status');
+    if (s.running) selectedMode = s.mode;
+    renderRunning(s.running);
+    $('url-addon').textContent = s.addon_url;
+    $('url-minitor').textContent = s.public_url;
+    $('url-qbit').textContent = s.qbittorrent_url;
+  }
+
+  async function startServer() {
+    $('btn-start').disabled = true; $('btn-start').textContent = 'Starting…';
+    try {
+      await invoke('start_server', { mode: selectedMode });
+    } catch (e) {
+      toast('Failed to start'); console.error(e);
+    } finally {
+      $('btn-start').disabled = false; $('btn-start').textContent = 'Start';
+    }
+  }
+
+  async function stopServer() {
+    await invoke('stop_server');
+    renderRunning(false);
+  }
+
+  $('btn-start').onclick = startServer;
+  $('btn-stop').onclick = stopServer;
+
+  // open links in the default browser instead of the webview
+  document.querySelectorAll('.url').forEach((el) => {
+    el.onclick = () => { if (el.textContent) openUrl(el.textContent); };
+  });
+  // copy buttons
+  document.querySelectorAll('.copy').forEach((btn) => {
+    btn.onclick = async () => {
+      const txt = $(btn.dataset.copy).textContent;
+      try { await navigator.clipboard.writeText(txt); toast('Copied'); } catch { toast(txt); }
+    };
+  });
+
+  // events from Rust
+  listen('server-ready', () => { refreshStatus(); toast('Minitor is running'); });
+  listen('server-stopped', () => renderRunning(false));
+
+  // initial + periodic refresh
+  refreshDeps();
+  refreshStatus();
+  setInterval(refreshStatus, 2500);
+</script>
+</body>
+</html>
