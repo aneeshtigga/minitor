@@ -19,11 +19,38 @@ use tauri::{
     tray::TrayIconBuilder,
     AppHandle, Manager, RunEvent, WindowEvent,
 };
+use tauri_plugin_autostart::ManagerExt;
 use tauri_plugin_opener::OpenerExt;
 
 const TRAY_ID: &str = "minitor-tray";
-// Monochrome template icon (black + alpha); macOS tints it for the menu bar.
-const TRAY_ICON: &[u8] = include_bytes!("../icons/tray.png");
+// Black "M" (alpha shape). On macOS this is used as a template image so the OS
+// auto-tints it. On Windows we pick black/white explicitly by taskbar theme.
+const TRAY_ICON_BLACK: &[u8] = include_bytes!("../icons/tray.png");
+#[cfg(target_os = "windows")]
+const TRAY_ICON_WHITE: &[u8] = include_bytes!("../icons/tray-white.png");
+
+/// Windows taskbar theme → which tray icon contrasts best.
+/// SystemUsesLightTheme=1 means a light taskbar (use the black icon); 0 / absent
+/// means a dark taskbar (use the white icon).
+#[cfg(target_os = "windows")]
+fn windows_tray_icon_bytes() -> &'static [u8] {
+    let light_taskbar = std::process::Command::new("reg")
+        .args([
+            "query",
+            r"HKCU\SOFTWARE\Microsoft\Windows\CurrentVersion\Themes\Personalize",
+            "/v",
+            "SystemUsesLightTheme",
+        ])
+        .output()
+        .ok()
+        .map(|o| String::from_utf8_lossy(&o.stdout).contains("0x1"))
+        .unwrap_or(false);
+    if light_taskbar {
+        TRAY_ICON_BLACK
+    } else {
+        TRAY_ICON_WHITE
+    }
+}
 
 #[derive(Serialize)]
 struct Status {
@@ -39,6 +66,20 @@ struct Status {
 fn app_version() -> String {
     // Compile-time crate version (kept in sync with the release tag by CI).
     env!("CARGO_PKG_VERSION").to_string()
+}
+
+/// Is the app registered to launch at login?
+#[tauri::command]
+fn autostart_enabled(app: AppHandle) -> bool {
+    app.autolaunch().is_enabled().unwrap_or(false)
+}
+
+/// Enable/disable launch-at-login (macOS LaunchAgent / Windows registry / Linux .desktop).
+#[tauri::command]
+fn set_autostart(app: AppHandle, enabled: bool) -> Result<(), String> {
+    let mgr = app.autolaunch();
+    let res = if enabled { mgr.enable() } else { mgr.disable() };
+    res.map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -115,11 +156,8 @@ fn show_tray(app: &AppHandle) {
     })();
     let Ok(menu) = menu else { return };
 
-    let icon = tauri::image::Image::from_bytes(TRAY_ICON).ok();
     let mut builder = TrayIconBuilder::with_id(TRAY_ID)
-        .icon_as_template(true) // auto black/white for the menu bar
         .menu(&menu)
-        .show_menu_on_left_click(true) // click the icon → dropdown menu
         .on_menu_event(|app, event| match event.id.as_ref() {
             "open" => show_main_window(app),
             "open_minitor" => {
@@ -134,9 +172,47 @@ fn show_tray(app: &AppHandle) {
             }
             _ => {}
         });
-    if let Some(icon) = icon {
-        builder = builder.icon(icon);
+
+    // Platform-specific icon + click behavior.
+    #[cfg(target_os = "macos")]
+    {
+        // Template image → macOS auto-tints it black/white for the menu bar.
+        // Left-click opens the dropdown (the standard macOS menu-bar pattern).
+        if let Ok(icon) = tauri::image::Image::from_bytes(TRAY_ICON_BLACK) {
+            builder = builder.icon(icon).icon_as_template(true);
+        }
+        builder = builder.show_menu_on_left_click(true);
     }
+    #[cfg(target_os = "windows")]
+    {
+        // Pick black/white by taskbar theme so it's never low-contrast.
+        // Windows convention: LEFT-click opens the app, RIGHT-click shows the menu.
+        if let Ok(icon) = tauri::image::Image::from_bytes(windows_tray_icon_bytes()) {
+            builder = builder.icon(icon);
+        }
+        builder = builder
+            .show_menu_on_left_click(false)
+            .on_tray_icon_event(|tray, event| {
+                if let tauri::tray::TrayIconEvent::Click {
+                    button: tauri::tray::MouseButton::Left,
+                    button_state: tauri::tray::MouseButtonState::Up,
+                    ..
+                } = event
+                {
+                    show_main_window(&tray.app_handle());
+                }
+            });
+    }
+    #[cfg(target_os = "linux")]
+    {
+        // Linux trays generally only support a menu (no reliable click event);
+        // keep the menu on left-click.
+        if let Ok(icon) = tauri::image::Image::from_bytes(TRAY_ICON_BLACK) {
+            builder = builder.icon(icon);
+        }
+        builder = builder.show_menu_on_left_click(true);
+    }
+
     let _ = builder.build(app);
 }
 
@@ -150,6 +226,10 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            None,
+        ))
         .manage(ServerState::default())
         .setup(|app| {
             // Auto-start the service in direct mode on launch ONLY when its
@@ -166,6 +246,8 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             app_version,
+            autostart_enabled,
+            set_autostart,
             check_deps,
             install_dep,
             download_url,

@@ -44,6 +44,8 @@
   /* status + links */
   .status-row { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; }
   .status-row .big { font-size: 15px; font-weight: 600; }
+  .startup { display: flex; align-items: center; gap: 8px; margin-top: 14px; padding-top: 12px; border-top: 1px solid #21262d; color: #c9d1d9; font-size: 13px; cursor: pointer; }
+  .startup input { width: 15px; height: 15px; accent-color: #2ea043; cursor: pointer; }
   .link { display: flex; align-items: center; gap: 8px; padding: 8px 0; border-top: 1px solid #21262d; }
   .link:first-of-type { border-top: 0; }
   .link .label { width: 88px; color: #8b949e; font-size: 12px; flex: 0 0 auto; }
@@ -129,6 +131,10 @@
         Paste the <b>Addon URL</b> into Stremio → Add-ons → search box → Install.
       </p>
     </div>
+    <label class="startup">
+      <input type="checkbox" id="autostart" />
+      <span>Launch Minitor at login</span>
+    </label>
   </div>
 </main>
 <div class="toast" id="toast"></div>
@@ -253,6 +259,20 @@
 
   $('btn-start').onclick = startServer;
   $('btn-stop').onclick = stopServer;
+
+  // ---- launch at login ----
+  invoke('autostart_enabled').then((on) => { $('autostart').checked = !!on; }).catch(() => {});
+  $('autostart').onchange = async (e) => {
+    const want = e.target.checked;
+    try {
+      await invoke('set_autostart', { enabled: want });
+      toast(want ? 'Will launch at login' : 'Won’t launch at login');
+    } catch (err) {
+      e.target.checked = !want; // revert on failure
+      toast('Could not change startup setting');
+      console.error(err);
+    }
+  };
 
   // open links in the default browser instead of the webview
   document.querySelectorAll('.url').forEach((el) => {
