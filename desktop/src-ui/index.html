@@ -34,6 +34,11 @@
   .dep .name { flex: 1; }
   .dep .name small { display: block; color: #8b949e; font-size: 11px; }
   .dep button { padding: 5px 12px; font-size: 12px; }
+  /* spinner (shown while refreshing / installing) */
+  .spinner { display: inline-block; width: 11px; height: 11px; border: 2px solid #ffffff44;
+    border-top-color: #fff; border-radius: 50%; animation: spin .6s linear infinite; vertical-align: -1px; }
+  .ghost .spinner { border-color: #c9d1d944; border-top-color: #c9d1d9; }
+  @keyframes spin { to { transform: rotate(360deg); } }
   /* mode toggle */
   .modes { display: flex; gap: 8px; }
   .mode { flex: 1; text-align: center; padding: 10px; border: 1px solid #30363d; border-radius: 8px; cursor: pointer; background: #0d1117; }
@@ -159,21 +164,33 @@
   // With one → show Install buttons. Without → show Download buttons.
   let hasPkgMgr = false;
 
+  let refreshing = false;
   async function refreshDeps() {
-    const d = await invoke('check_deps');
-    hasPkgMgr = d.brew;
-    setDot('dot-brew', d.brew);
-    setDot('dot-jackett', d.jackett);
-    setDot('dot-qbittorrent', d.qbittorrent);
-    $('pkgmgr-note').textContent = d.brew
-      ? `using ${d.pkg_mgr}`
-      : 'none found — use Download buttons';
-    // For each dep: hide when installed; else "Install" (pkg mgr) or "Download".
-    for (const dep of ['jackett', 'qbittorrent']) {
-      const btn = $('btn-' + dep);
-      if (d[dep]) { btn.style.display = 'none'; continue; }
-      btn.style.display = '';
-      btn.textContent = hasPkgMgr ? 'Install' : 'Download';
+    if (refreshing) return;                 // ignore re-entrant clicks
+    refreshing = true;
+    const rbtn = $('btn-refresh');
+    rbtn.disabled = true;
+    rbtn.innerHTML = '<span class="spinner"></span> Checking…';
+    try {
+      const d = await invoke('check_deps');
+      hasPkgMgr = d.brew;
+      setDot('dot-brew', d.brew);
+      setDot('dot-jackett', d.jackett);
+      setDot('dot-qbittorrent', d.qbittorrent);
+      $('pkgmgr-note').textContent = d.brew
+        ? `using ${d.pkg_mgr}`
+        : 'none found — use Download buttons';
+      // For each dep: hide when installed; else "Install" (pkg mgr) or "Download".
+      for (const dep of ['jackett', 'qbittorrent']) {
+        const btn = $('btn-' + dep);
+        if (d[dep]) { btn.style.display = 'none'; continue; }
+        btn.style.display = '';
+        btn.textContent = hasPkgMgr ? 'Install' : 'Download';
+      }
+    } finally {
+      refreshing = false;
+      rbtn.disabled = false;
+      rbtn.textContent = 'Refresh';
     }
   }
 
@@ -185,7 +202,7 @@
     }
     const btn = $('btn-' + name);
     const orig = btn.textContent;
-    btn.disabled = true; btn.textContent = 'Installing…';
+    btn.disabled = true; btn.innerHTML = '<span class="spinner"></span> Installing…';
     try {
       await invoke('install_dep', { name });
       toast(name + ' installed');
