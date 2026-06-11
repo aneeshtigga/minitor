@@ -87,13 +87,19 @@ jobs:
         shell: bash
         run: |
           mkdir -p artifacts
-          # Installers live under target/release/bundle/ — scoping here avoids
-          # picking up the raw app binary (minitor-desktop.exe) in target/release/.
-          find desktop/src-tauri/target/release/bundle -type f \
+          BUNDLE=desktop/src-tauri/target/release/bundle
+          if [ ! -d "$BUNDLE" ]; then
+            echo "::error::No bundle directory at $BUNDLE — Tauri produced no installer."
+            echo "Contents of target/release:"; ls -la desktop/src-tauri/target/release || true
+            exit 1
+          fi
+          # Installers live under bundle/ — scoping here avoids the raw app binary.
+          find "$BUNDLE" -type f \
             \( -name '*.dmg' -o -name '*.msi' -o -name '*.exe' \
                -o -name '*.deb' -o -name '*.AppImage' -o -name '*.rpm' \) \
             -print -exec cp {} artifacts/ \;
-          ls -lh artifacts
+          echo "Collected:"; ls -lh artifacts
+          [ -n "$(ls -A artifacts)" ] || { echo "::error::No installer files matched."; exit 1; }
 
       - name: Upload to Release
         uses: softprops/action-gh-release@v2
