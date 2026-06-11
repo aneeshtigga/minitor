@@ -45,8 +45,10 @@ async function main() {
 
   // Turnkey Jackett setup: discover its API key if not supplied, and auto-add
   // popular indexers if none are configured yet (so search works out of the box
-  // when launched by the desktop app). Best-effort; never blocks startup.
-  await bootstrapJackett().catch(() => {});
+  // when launched by the desktop app). Deliberately NOT awaited: it retries in
+  // the background while Jackett finishes starting (up to 90s on first launch),
+  // and search picks the key up via shared config as soon as it lands.
+  bootstrapJackett().catch(() => {});
 
   // Verify qBittorrent up front so failures are obvious, not mysterious.
   try {

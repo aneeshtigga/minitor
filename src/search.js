@@ -5,9 +5,11 @@ import { searchJackett } from './jackett.js';
 import { config } from './config.js';
 
 /**
- * Torrent search via the user's installed qBittorrent search plugins.
+ * Torrent search. Jackett (Torznab) is the primary — and, whenever a Jackett
+ * URL is configured, the ONLY — backend; see searchTorrents() for the policy.
  *
- * qBittorrent's search API is asynchronous:
+ * The legacy fallback below uses the user's installed qBittorrent search
+ * plugins. qBittorrent's search API is asynchronous:
  *   1. POST /search/start  -> returns a search id
  *   2. poll /search/status -> until status == "Stopped" (or we time out)
  *   3. GET  /search/results -> array of { fileName, fileUrl, fileSize, nbSeeders, ... }
@@ -34,6 +36,10 @@ const PROVIDER_LABELS = {
   solidtorrents: 'SolidTorrents',
   bitsearch: 'BitSearch',
   nyaasi: 'Nyaa',
+  'nyaa.si': 'Nyaa',
+  eztv: 'EZTV',
+  'kickasstorrents.ws': 'KickassTorrents',
+  'kickasstorrents-ws': 'KickassTorrents',
   zooqle: 'Zooqle',
   glotorrents: 'GloTorrents',
   cloudtorrents: 'CloudTorrents',
@@ -259,28 +265,47 @@ export async function searchTorrents(queries, match = {}) {
   const cached = cacheGet(cacheKey);
   if (cached) return cached;
 
-  let rows = [];
-  // Try queries best-first; stop as soon as one yields relevant hits.
-  //
   // PRIMARY: Jackett (Torznab aggregator) — one fast request (~1-3s), full
   // untruncated names, real seeders/infohash, hundreds of indexers. This is
   // the fast path that makes minitor load like Torrentio.
   //
-  // FALLBACK (only if Jackett isn't configured): the qBittorrent python plugins
-  // + apibay. These are slow (~12s polling) and truncate names — kept solely so
-  // minitor still works before Jackett is set up.
+  // When a Jackett URL is configured (the desktop app ALWAYS sets one, on every
+  // OS), Jackett is the one and only search backend. A missing API key or a
+  // down Jackett must answer fast and empty — never silently degrade into the
+  // ~12s qBittorrent-plugin poll below, which reads as "minitor is slow" when
+  // the truth is "Jackett is broken" (exactly the bug that hid the Windows
+  // ProgramData key issue for a whole release).
+  //
+  // LEGACY FALLBACK (only when no Jackett URL is configured at all — i.e. a
+  // from-source setup that never set JACKETT_URL): the qBittorrent python
+  // plugins + apibay. Slow (~12s polling) and truncates names.
+  const jackettConfigured = Boolean(config.jackett.url);
+  if (jackettConfigured && !config.jackett.enabled) {
+    // API key not resolved yet — the bootstrap is still retrying in the
+    // background. Fail fast and DON'T cache, so the very next request can use
+    // the key the moment it lands.
+    return [];
+  }
+
+  let rows = [];
+  // Stragglers from the per-indexer Jackett fan-out: resolves to extra rows
+  // that arrived after the soft deadline. Used to upgrade the cache below.
+  let pendingLate = null;
+  // Try queries best-first; stop as soon as one yields relevant hits.
   for (const q of queries) {
-    if (config.jackett.enabled) {
-      const jackettRows = await searchJackett(q).catch(() => []);
-      if (jackettRows.length) {
-        rows = jackettRows;
+    if (jackettConfigured) {
+      const result = await searchJackett(q).catch(() => null);
+      if (result && result.rows.length) {
+        rows = result.rows;
+        pendingLate = result.pending;
         break;
       }
-      // Jackett enabled but this query returned nothing — try the next query.
+      // Jackett answered empty (or is down) for this query — try the next
+      // query, but never the plugin path.
       continue;
     }
 
-    // Fallback path: plugins + apibay in parallel.
+    // Legacy fallback path: plugins + apibay in parallel.
     const [pluginRows, apibayRows] = await Promise.all([
       runSearch(q).catch(() => []),
       searchApibay(q).catch(() => []),
@@ -291,9 +316,41 @@ export async function searchTorrents(queries, match = {}) {
     }
   }
 
+  const candidates = await buildCandidates(rows, titleWords, year);
+
+  // Cache with a TTL scaled to confidence: a healthy set (something is actually
+  // seeded) sticks for the full window; an empty set or an all-zero-seeder
+  // snapshot (likely an indexer hiccup) gets a short TTL so it re-queries soon.
+  const healthy = candidates.some((c) => c.seeders > 0);
+  cacheSet(cacheKey, candidates, healthy ? RESULT_TTL_MS : RESULT_TTL_SHORT_MS);
+
+  // Slow indexers didn't make the user wait — but their finds still matter.
+  // When the stragglers land, rebuild the candidate set and upgrade the cache
+  // in place, so the NEXT visit to this title shows the full list instantly.
+  if (pendingLate) {
+    pendingLate
+      .then(async (late) => {
+        if (!late || !late.length) return;
+        const full = await buildCandidates([...rows, ...late], titleWords, year);
+        if (full.length > candidates.length) {
+          const fullHealthy = full.some((c) => c.seeders > 0);
+          cacheSet(cacheKey, full, fullHealthy ? RESULT_TTL_MS : RESULT_TTL_SHORT_MS);
+        }
+      })
+      .catch(() => {});
+  }
+
+  return candidates;
+}
+
+/**
+ * Filter rows for relevance, attach magnets, merge duplicates by infohash,
+ * and rank. Shared by the immediate response and the late-straggler upgrade.
+ */
+async function buildCandidates(rows, titleWords, year) {
   // Keep only relevant rows, then attach a magnet to each — directly if the
   // plugin gave one, otherwise by resolving its description-page URL.
-  // (apibay rows already carry _magnet, so they skip resolution.)
+  // (apibay/Jackett rows already carry _magnet, so they skip resolution.)
   const relevant = rows.filter((r) => looksRelevant(r.fileName || '', titleWords, year));
   await attachMagnets(relevant);
 
@@ -358,10 +415,5 @@ export async function searchTorrents(queries, match = {}) {
       b.seeders - a.seeders,
   );
 
-  // Cache with a TTL scaled to confidence: a healthy set (something is actually
-  // seeded) sticks for the full window; an empty set or an all-zero-seeder
-  // snapshot (likely an indexer hiccup) gets a short TTL so it re-queries soon.
-  const healthy = candidates.some((c) => c.seeders > 0);
-  cacheSet(cacheKey, candidates, healthy ? RESULT_TTL_MS : RESULT_TTL_SHORT_MS);
   return candidates;
 }

@@ -34,9 +34,22 @@ pub struct DepStatus {
     /// Whether a usable package manager is present (Homebrew / winget / apt…).
     pub brew: bool,
     pub jackett: bool,
+    /// Jackett is actually answering on its port — installed-but-stopped is a
+    /// real state on Windows (the service doesn't always run), and the UI must
+    /// distinguish it from healthy.
+    pub jackett_running: bool,
     pub qbittorrent: bool,
     /// Human label for the detected package manager (shown in the UI).
     pub pkg_mgr: String,
+}
+
+/// Is Jackett answering on its default port? A plain TCP connect to loopback
+/// settles in microseconds (refused) or `timeout` at worst; no HTTP needed.
+pub fn jackett_reachable() -> bool {
+    use std::net::{SocketAddr, TcpStream};
+    use std::time::Duration;
+    let addr: SocketAddr = ([127, 0, 0, 1], 9117).into();
+    TcpStream::connect_timeout(&addr, Duration::from_millis(400)).is_ok()
 }
 
 /// Official download pages, used as the fallback when no package manager works.
@@ -151,8 +164,55 @@ mod platform {
         )
     }
 
+    /// Bring Jackett up. The winget package installs a Windows service, but
+    /// "installed" ≠ "running": the service is regularly found Stopped (failed
+    /// boot start, user stopped it, install session never started it). Try, in
+    /// order: already answering → done; `sc start` (works when elevated or the
+    /// service ACL allows); else run JackettConsole.exe directly — it lives in
+    /// %ProgramData%\Jackett next to the SAME config the service uses, and
+    /// needs no elevation.
     pub fn start_jackett_service() {
-        // The Jackett winget package installs a Windows service that autostarts.
+        if jackett_reachable() {
+            return;
+        }
+        // A standalone Jackett may already be starting up (not listening yet).
+        if process_running("JackettConsole.exe") || process_running("jackett.exe") {
+            return;
+        }
+        let service_started = command("sc")
+            .args(["start", "Jackett"])
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+        if service_started {
+            return;
+        }
+        if let Some(exe) = jackett_console_path() {
+            let _ = command(&exe).spawn();
+        }
+    }
+
+    fn process_running(image: &str) -> bool {
+        command("tasklist")
+            .args(["/FI", &format!("IMAGENAME eq {image}"), "/NH"])
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).to_lowercase().contains(&image.to_lowercase()))
+            .unwrap_or(false)
+    }
+
+    fn jackett_console_path() -> Option<String> {
+        let program_data =
+            std::env::var("ProgramData").unwrap_or_else(|_| r"C:\ProgramData".to_string());
+        for dir in [
+            format!(r"{program_data}\Jackett"),
+            r"C:\Program Files\Jackett".to_string(),
+        ] {
+            let p = format!(r"{dir}\JackettConsole.exe");
+            if std::path::Path::new(&p).exists() {
+                return Some(p);
+            }
+        }
+        None
     }
 }
 
@@ -234,6 +294,7 @@ pub fn check() -> DepStatus {
     DepStatus {
         brew: label.is_some(),
         jackett: platform::jackett_installed(),
+        jackett_running: jackett_reachable(),
         qbittorrent: platform::qbittorrent_installed(),
         pkg_mgr: label.unwrap_or_else(|| "none".to_string()),
     }

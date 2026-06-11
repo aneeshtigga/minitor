@@ -31,6 +31,7 @@
   .dep:first-child { border-top: 0; }
   .dot { width: 9px; height: 9px; border-radius: 50%; background: #f85149; flex: 0 0 auto; }
   .dot.ok { background: #2ea043; }
+  .dot.warn { background: #d29922; }
   .dep .name { flex: 1; }
   .dep .name small { display: block; color: #8b949e; font-size: 11px; }
   .dep button { padding: 5px 12px; font-size: 12px; }
@@ -78,7 +79,7 @@
     </div>
     <div class="dep">
       <span class="dot" id="dot-jackett"></span>
-      <span class="name">Jackett <small>torrent search backend (required)</small></span>
+      <span class="name">Jackett <small id="jackett-note">torrent search backend (required)</small></span>
       <button class="ghost" id="btn-jackett" style="display:none">Install</button>
     </div>
     <div class="dep">
@@ -159,6 +160,21 @@
 
   function setDot(id, ok) { $(id).classList.toggle('ok', !!ok); }
 
+  // Jackett's dot is tri-state: green = answering on its port, amber =
+  // installed but not running (we start it with the service), red = missing.
+  // Installed-state comes from check_deps; running-state is also re-polled
+  // cheaply alongside `status` so the dot flips amber → green by itself once
+  // Jackett finishes booting.
+  let jackettInstalled = false;
+  function renderJackettDot(running) {
+    const dot = $('dot-jackett');
+    dot.classList.toggle('ok', jackettInstalled && running);
+    dot.classList.toggle('warn', jackettInstalled && !running);
+    $('jackett-note').textContent = jackettInstalled && !running
+      ? 'installed but not running — starts with the service'
+      : 'torrent search backend (required)';
+  }
+
   // ---- dependencies ----
   // d.brew = "a package manager is available"; d.pkg_mgr = its name.
   // With one → show Install buttons. Without → show Download buttons.
@@ -174,8 +190,9 @@
     try {
       const d = await invoke('check_deps');
       hasPkgMgr = d.brew;
+      jackettInstalled = d.jackett;
       setDot('dot-brew', d.brew);
-      setDot('dot-jackett', d.jackett);
+      renderJackettDot(d.jackett_running);
       setDot('dot-qbittorrent', d.qbittorrent);
       $('pkgmgr-note').textContent = d.brew
         ? `using ${d.pkg_mgr}`
@@ -258,6 +275,10 @@
   }
 
   async function refreshStatus() {
+    // Live Jackett health (cheap TCP probe, unlike the full check_deps).
+    if (jackettInstalled) {
+      invoke('jackett_running').then(renderJackettDot).catch(() => {});
+    }
     const s = await invoke('status');
     // The switch is complete once the service reports running in the target mode.
     if (switching && s.running && s.mode === selectedMode) switching = false;

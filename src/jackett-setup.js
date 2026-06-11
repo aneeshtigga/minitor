@@ -8,9 +8,9 @@ import { config } from './config.js';
  *
  *  1. resolveApiKey(): if JACKETT_API_KEY wasn't supplied, read it straight from
  *     Jackett's own ServerConfig.json (it generates a random key on first run).
- *  2. ensureIndexers(): Jackett ships with ZERO indexers configured, so search
+ *  2. bootstrapJackett(): Jackett ships with ZERO indexers configured, so search
  *     would return nothing. If none are configured yet, auto-add a few popular
- *     public ones so search works out of the box.
+ *     public ones so search works out of the box. Retries while Jackett boots.
  *
  * Everything here is best-effort: any failure just logs and continues (the user
  * can always add indexers manually in Jackett's UI).
@@ -22,6 +22,9 @@ function configPaths() {
   return [
     path.join(home, '.config', 'Jackett', 'ServerConfig.json'),
     path.join(home, 'Library', 'Application Support', 'Jackett', 'ServerConfig.json'),
+    // The Windows installer (winget) is a machine-wide install: ALL its data —
+    // service binary AND config — lives in %ProgramData%\Jackett, not %APPDATA%.
+    process.env.ProgramData ? path.join(process.env.ProgramData, 'Jackett', 'ServerConfig.json') : null,
     process.env.APPDATA ? path.join(process.env.APPDATA, 'Jackett', 'ServerConfig.json') : null,
   ].filter(Boolean);
 }
@@ -58,34 +61,101 @@ export function resolveApiKey() {
   return config.jackett.enabled;
 }
 
-const DEFAULT_INDEXERS = ['thepiratebay', 'therarbg', 'limetorrents', 'torrentdownloads'];
+// Jackett ids (not display names): nyaa.si is "nyaasi", kickasstorrents.ws is
+// "kickasstorrents-ws". All public, no login, so empty-config auto-add works.
+const DEFAULT_INDEXERS = [
+  'thepiratebay',
+  '1337x',
+  'yts',
+  'eztv',
+  'therarbg',
+  'nyaasi',
+  'kickasstorrents-ws',
+  'limetorrents',
+  'torrentdownloads',
+];
 
-async function jackettFetch(pathSuffix, init) {
-  const url = `${config.jackett.url}/api/v2.0${pathSuffix}`;
-  const sep = pathSuffix.includes('?') ? '&' : '?';
-  const res = await fetch(`${url}${sep}apikey=${encodeURIComponent(config.jackett.apiKey)}`, init);
-  return res;
+/**
+ * Jackett's dashboard API (/api/v2.0/indexers…) is SESSION-cookie authed — the
+ * apikey query param is only honored on the Torznab search endpoints. With no
+ * admin password set, walking /UI/Dashboard's redirect chain (a cookie-check
+ * dance: Login → TestCookie → Login?cookiesChecked=1 → Dashboard) hands us a
+ * valid session cookie. With a password set the chain parks on the Login page
+ * and we return null (caller degrades gracefully — search still works, only
+ * indexer auto-add is off the table).
+ *
+ * Throws on network failure (Jackett not up yet) so the caller can keep
+ * retrying; returns null only when Jackett answered but won't let us in.
+ */
+async function getSessionCookie() {
+  let url = `${config.jackett.url}/UI/Dashboard`;
+  const jar = new Map(); // cookie name -> "name=value"
+  for (let hop = 0; hop < 8; hop++) {
+    const cookie = [...jar.values()].join('; ');
+    const res = await fetch(url, { redirect: 'manual', headers: cookie ? { cookie } : {} });
+    const setCookies = res.headers.getSetCookie ? res.headers.getSetCookie() : [];
+    for (const c of setCookies) {
+      const pair = c.split(';')[0];
+      jar.set(pair.split('=')[0], pair);
+    }
+    const loc = res.headers.get('location');
+    if (res.status >= 300 && res.status < 400 && loc) {
+      url = new URL(loc, url).href;
+      continue;
+    }
+    // Landed. Only an authenticated (non-Login) page means the cookie is good.
+    return res.ok && !url.includes('/UI/Login') && jar.size ? [...jar.values()].join('; ') : null;
+  }
+  return null;
 }
 
-/** How many indexers are currently configured in Jackett. */
-async function configuredIndexerCount() {
+async function jackettFetch(pathSuffix, cookie, init = {}) {
+  const url = `${config.jackett.url}/api/v2.0${pathSuffix}`;
+  const sep = pathSuffix.includes('?') ? '&' : '?';
+  return fetch(`${url}${sep}apikey=${encodeURIComponent(config.jackett.apiKey)}`, {
+    ...init,
+    headers: { ...(init.headers || {}), cookie },
+  });
+}
+
+/** Configured indexer list (objects) via the dashboard API; null = couldn't ask. */
+async function fetchConfiguredIndexers(cookie) {
   try {
-    const res = await jackettFetch('/indexers?configured=true');
+    const res = await jackettFetch('/indexers?configured=true', cookie);
     if (!res.ok) return null;
     const list = await res.json();
-    return Array.isArray(list) ? list.length : null;
+    return Array.isArray(list) ? list : null;
   } catch {
     return null;
   }
 }
 
 /**
+ * Configured indexer IDs, cached. jackett.js fans search out per-indexer (so
+ * one slow site can't gate the whole search) and needs this list; the cookie
+ * dance + list fetch is ~100ms against localhost, so a TTL cache keeps it off
+ * the per-search hot path. Returns null when the list can't be read (e.g. an
+ * admin password is set) — callers fall back to the `all` aggregate.
+ */
+const IDS_TTL_MS = 10 * 60 * 1000;
+let idsCache = { at: 0, ids: null };
+export async function configuredIndexerIds() {
+  if (idsCache.ids && Date.now() - idsCache.at < IDS_TTL_MS) return idsCache.ids;
+  const cookie = await getSessionCookie().catch(() => null);
+  if (!cookie) return null;
+  const list = await fetchConfiguredIndexers(cookie);
+  const ids = list ? list.map((i) => i.id).filter(Boolean) : null;
+  if (ids && ids.length) idsCache = { at: Date.now(), ids };
+  return ids;
+}
+
+/**
  * Add one indexer by id using Jackett's "auto-configure" endpoint. Public
  * indexers with no login take no settings, so an empty-config POST succeeds.
  */
-async function addIndexer(id) {
+async function addIndexer(id, cookie) {
   try {
-    const res = await jackettFetch(`/indexers/${id}/config`, {
+    const res = await jackettFetch(`/indexers/${id}/config`, cookie, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: '[]',
@@ -96,25 +166,12 @@ async function addIndexer(id) {
   }
 }
 
-/**
- * Ensure Jackett has at least one indexer; if it has none, add the defaults.
- * Best-effort and non-fatal — logs a summary.
- */
-export async function ensureIndexers() {
-  if (!config.jackett.enabled) return;
-  const count = await configuredIndexerCount();
-  if (count == null) {
-    console.log('  ⚠ Could not query Jackett indexers (is Jackett running?)');
-    return;
-  }
-  if (count > 0) {
-    console.log(`  ✓ Jackett has ${count} indexer(s) configured`);
-    return;
-  }
+/** Add the default public indexers (called once Jackett is known reachable). */
+async function addDefaultIndexers(cookie) {
   console.log('  Jackett has no indexers — auto-adding popular public ones…');
   const added = [];
   for (const id of DEFAULT_INDEXERS) {
-    if (await addIndexer(id)) added.push(id);
+    if (await addIndexer(id, cookie)) added.push(id);
   }
   console.log(
     added.length
@@ -123,8 +180,60 @@ export async function ensureIndexers() {
   );
 }
 
-/** Run the full bootstrap: resolve key, then ensure indexers. */
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const BOOTSTRAP_RETRY_MS = 2_000;
+const BOOTSTRAP_MAX_MS = 90_000;
+
+/**
+ * Full bootstrap: resolve the API key, then ensure indexers exist.
+ *
+ * Retries for up to 90s instead of one-shot, because on a first launch Jackett
+ * is typically still starting (the desktop app kicks its service off moments
+ * before spawning us), and on a truly fresh install ServerConfig.json doesn't
+ * even exist until Jackett's first run writes it. Each pass re-reads the key
+ * from disk and re-probes the API; we finish as soon as Jackett answers.
+ * Callers should NOT await this — it's designed to run in the background while
+ * the HTTP server starts (searchJackett picks the key up via shared config).
+ */
 export async function bootstrapJackett() {
-  if (!resolveApiKey()) return;
-  await ensureIndexers().catch(() => {});
+  if (!config.jackett.url) return; // Jackett not configured at all
+  const deadline = Date.now() + BOOTSTRAP_MAX_MS;
+  let waiting = false;
+  for (;;) {
+    if (resolveApiKey()) {
+      let cookie;
+      let reachable = true;
+      try {
+        cookie = await getSessionCookie();
+      } catch {
+        reachable = false; // not listening yet — keep waiting
+      }
+      if (reachable) {
+        if (waiting) console.log('  ✓ Jackett is up');
+        if (!cookie) {
+          console.log('  ⚠ Jackett dashboard needs a login (admin password set?) — cannot auto-add indexers; search itself still works');
+          return;
+        }
+        const list = await fetchConfiguredIndexers(cookie);
+        if (list == null) console.log('  ⚠ Could not query Jackett indexers — add some in the Jackett UI if search comes up empty');
+        else if (list.length > 0) console.log(`  ✓ Jackett has ${list.length} indexer(s) configured`);
+        else await addDefaultIndexers(cookie).catch(() => {});
+        // Warm the per-search indexer-id cache so the first search doesn't
+        // pay the cookie handshake.
+        configuredIndexerIds().catch(() => {});
+        return;
+      }
+    }
+    if (Date.now() >= deadline) {
+      console.log(
+        `  ⚠ Jackett not reachable at ${config.jackett.url} — searches fall back to the slow path until it's running`,
+      );
+      return;
+    }
+    if (!waiting) {
+      waiting = true;
+      console.log('  ⏳ Waiting for Jackett to come up…');
+    }
+    await sleep(BOOTSTRAP_RETRY_MS);
+  }
 }

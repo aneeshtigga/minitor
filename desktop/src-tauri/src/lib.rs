@@ -104,6 +104,17 @@ fn download_url(name: String) -> String {
     deps::download_url(&name).to_string()
 }
 
+/// Lightweight "is Jackett answering?" probe (TCP connect to 127.0.0.1:9117).
+/// Cheap enough for the UI to poll alongside `status` — unlike `check_deps`,
+/// which shells out to the package manager. spawn_blocking keeps the (worst
+/// case 400ms) connect timeout off the UI thread.
+#[tauri::command]
+async fn jackett_running() -> bool {
+    tauri::async_runtime::spawn_blocking(deps::jackett_reachable)
+        .await
+        .unwrap_or(false)
+}
+
 /// Start the sidecar in `mode` and show the tray. Shared by the UI command and
 /// the launch auto-start.
 fn launch_service(app: &AppHandle, mode: &str) -> Result<(), String> {
@@ -269,6 +280,7 @@ pub fn run() {
             check_deps,
             install_dep,
             download_url,
+            jackett_running,
             start_server,
             stop_server,
             status
