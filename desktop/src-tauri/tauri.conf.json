@@ -34,6 +34,11 @@
       "icons/icon.png"
     ],
     "externalBin": ["binaries/minitor"],
+    "windows": {
+      "nsis": {
+        "installerIcon": "icons/icon.ico"
+      }
+    },
     "macOS": {
       "minimumSystemVersion": "10.15"
     }
