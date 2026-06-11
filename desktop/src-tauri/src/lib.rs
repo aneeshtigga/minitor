@@ -22,6 +22,12 @@ struct Status {
 }
 
 #[tauri::command]
+fn app_version() -> String {
+    // Compile-time crate version (kept in sync with the release tag by CI).
+    env!("CARGO_PKG_VERSION").to_string()
+}
+
+#[tauri::command]
 fn check_deps() -> deps::DepStatus {
     deps::check()
 }
@@ -68,6 +74,7 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .manage(ServerState::default())
         .invoke_handler(tauri::generate_handler![
+            app_version,
             check_deps,
             install_dep,
             download_url,

@@ -13,6 +13,7 @@
   }
   header { padding: 18px 22px; border-bottom: 1px solid #21262d; }
   header h1 { margin: 0; font-size: 19px; letter-spacing: .3px; }
+  header h1 .ver { font-size: 12px; font-weight: 500; color: #8b949e; vertical-align: middle; margin-left: 6px; }
   header p { margin: 3px 0 0; color: #8b949e; font-size: 12px; }
   main { padding: 18px 22px; }
   .card { background: #161b22; border: 1px solid #21262d; border-radius: 10px; padding: 14px 16px; margin-bottom: 16px; }
@@ -57,7 +58,7 @@
 </head>
 <body>
 <header>
-  <h1>Minitor</h1>
+  <h1>Minitor <span id="version" class="ver"></span></h1>
   <p>Torrent search + streaming for Stremio</p>
 </header>
 <main>
@@ -261,6 +262,9 @@
   // events from Rust
   listen('server-ready', () => { refreshStatus(); toast('Minitor is running'); });
   listen('server-stopped', () => renderRunning(false));
+
+  // show the app version beside the title
+  invoke('app_version').then((v) => { $('version').textContent = 'v' + v; }).catch(() => {});
 
   // initial + periodic refresh
   refreshDeps();
