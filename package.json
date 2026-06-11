@@ -11,7 +11,9 @@
     "dev": "node --watch src/index.js",
     "bundle": "esbuild src/index.js --bundle --platform=node --format=cjs --target=node22 --define:import.meta.url=importMetaUrl --banner:js=\"const importMetaUrl=require('url').pathToFileURL(__filename).href;\" --outfile=dist/minitor-bundle.cjs",
     "build:sidecar:arm64": "npm run bundle && pkg dist/minitor-bundle.cjs --config pkg.config.json --target node22-macos-arm64 --output desktop/src-tauri/binaries/minitor-aarch64-apple-darwin && codesign --force --sign - desktop/src-tauri/binaries/minitor-aarch64-apple-darwin",
-    "build:sidecar:x64": "npm run bundle && pkg dist/minitor-bundle.cjs --config pkg.config.json --target node22-macos-x64 --output desktop/src-tauri/binaries/minitor-x86_64-apple-darwin && codesign --force --sign - desktop/src-tauri/binaries/minitor-x86_64-apple-darwin"
+    "build:sidecar:x64": "npm run bundle && pkg dist/minitor-bundle.cjs --config pkg.config.json --target node22-macos-x64 --output desktop/src-tauri/binaries/minitor-x86_64-apple-darwin && codesign --force --sign - desktop/src-tauri/binaries/minitor-x86_64-apple-darwin",
+    "build:sidecar:win": "npm run bundle && pkg dist/minitor-bundle.cjs --config pkg.config.json --target node22-win-x64 --output desktop/src-tauri/binaries/minitor-x86_64-pc-windows-msvc.exe",
+    "build:sidecar:linux": "npm run bundle && pkg dist/minitor-bundle.cjs --config pkg.config.json --target node22-linux-x64 --output desktop/src-tauri/binaries/minitor-x86_64-unknown-linux-gnu"
   },
   "engines": {
     "node": ">=18"

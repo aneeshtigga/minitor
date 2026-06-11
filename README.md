@@ -42,34 +42,43 @@ Set with `STREAM_MODE` (or the toggle in the desktop app):
 
 ---
 
-## 🚀 Quick start — macOS app
+## 🚀 Quick start — the desktop app
 
 <div align="center">
 
-### [ ↓ Download the latest .dmg ](../../releases/latest)
+### [ ↓ Download the latest release ](../../releases/latest)
 
 </div>
 
-Grab `Minitor_<version>_aarch64.dmg` *(Apple Silicon)*. Intel Macs aren't
-prebuilt — run from source instead *(below)*.
+| OS | File | Notes |
+|----|------|-------|
+| macOS *(Apple Silicon)* | `Minitor_<v>_aarch64.dmg` | Intel Macs: run from source |
+| Windows *(x64)* | `Minitor_<v>_x64-setup.exe` / `.msi` | |
+| Linux *(x64)* | `Minitor_<v>_amd64.AppImage` / `.deb` | |
+
 The app is a small control panel that tries to handle the setup for you:
 
-- Checks for **Homebrew → Jackett → qBittorrent**, and installs the missing ones
+- Detects **Jackett** and **qBittorrent**, and installs the missing ones via your
+  package manager — Homebrew (macOS), winget (Windows), apt/dnf/pacman (Linux).
+  No package manager? It shows a **Download** button instead.
 - Configures Jackett (finds its API key, adds a few popular indexers)
 - **Direct / Cache** toggle + **Start / Stop**
 - Shows the addon URL to paste into Stremio
 - Stops the service when you quit
 
-**First launch — unsigned app.** It isn't notarized (no paid Apple cert), so macOS
-will block the first open. After dragging **Minitor → Applications**, either
-double-click the bundled `unquarantine.command`, or run:
+**First launch.** The app is unsigned (no paid signing cert), so your OS may warn
+on first open:
 
-```bash
-xattr -dr com.apple.quarantine /Applications/Minitor.app
-codesign --force --deep --sign - /Applications/Minitor.app
-```
-
-Then open Minitor normally *(or right-click the app → Open the first time)*.
+- **macOS** — drag **Minitor → Applications**, then double-click the bundled
+  `unquarantine.command`, or run:
+  ```bash
+  xattr -dr com.apple.quarantine /Applications/Minitor.app
+  codesign --force --deep --sign - /Applications/Minitor.app
+  ```
+  *(Or right-click the app → Open the first time.)*
+- **Windows** — SmartScreen may show "Windows protected your PC" → **More info →
+  Run anyway**.
+- **Linux** — make the AppImage executable: `chmod +x Minitor_*.AppImage`.
 
 > Cache mode only: enable qBittorrent's Web UI (Settings → Web UI, port 8080).
 > Direct mode needs nothing extra.
@@ -82,9 +91,16 @@ Then open Minitor normally *(or right-click the app → Open the first time)*.
 <summary><b>1 · Install Jackett (+ qBittorrent for cache mode)</b></summary>
 
 ```bash
-brew install jackett                 # search backend
-brew services start jackett          # → http://127.0.0.1:9117
-brew install --cask qbittorrent      # only for STREAM_MODE=cache
+# macOS (Homebrew)
+brew install jackett && brew services start jackett   # → http://127.0.0.1:9117
+brew install --cask qbittorrent                        # only for STREAM_MODE=cache
+
+# Windows (winget)
+winget install Jackett.Jackett
+winget install qBittorrent.qBittorrent
+
+# Linux (apt example)
+sudo apt-get install jackett qbittorrent
 ```
 
 In the Jackett UI (`http://127.0.0.1:9117`) add a few indexers + copy the API key
@@ -130,16 +146,20 @@ ranked streams inline.
 </details>
 
 <details>
-<summary><b>Build the macOS app yourself</b></summary>
+<summary><b>Build the desktop app yourself</b></summary>
+
+Build on the OS you're targeting (Tauri can't cross-compile). Pick the matching
+sidecar script:
 
 ```bash
 npm install
-npm run build:sidecar:arm64        # bundle + pkg + ad-hoc sign the Node sidecar
+npm run build:sidecar:arm64        # macOS Apple Silicon  (also: :x64, :win, :linux)
 cd desktop && npm install
-npm run tauri build                # → src-tauri/target/release/bundle/dmg/*.dmg
+npm run tauri build                # → src-tauri/target/release/bundle/
 ```
 
-CI builds the Apple Silicon DMG automatically — push a `v*` tag (see `.github/workflows/release.yml`).
+CI builds macOS (Apple Silicon), Windows and Linux automatically — push a `v*`
+tag (see `.github/workflows/release.yml`).
 </details>
 
 ---

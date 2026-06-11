@@ -66,8 +66,7 @@
     <h2>Dependencies</h2>
     <div class="dep">
       <span class="dot" id="dot-brew"></span>
-      <span class="name">Homebrew <small>package manager (installs the rest)</small></span>
-      <button class="ghost" id="btn-brew" style="display:none">Install guide</button>
+      <span class="name">Package manager <small id="pkgmgr-note">detecting…</small></span>
     </div>
     <div class="dep">
       <span class="dot" id="dot-jackett"></span>
@@ -149,18 +148,34 @@
   function setDot(id, ok) { $(id).classList.toggle('ok', !!ok); }
 
   // ---- dependencies ----
+  // d.brew = "a package manager is available"; d.pkg_mgr = its name.
+  // With one → show Install buttons. Without → show Download buttons.
+  let hasPkgMgr = false;
+
   async function refreshDeps() {
     const d = await invoke('check_deps');
+    hasPkgMgr = d.brew;
     setDot('dot-brew', d.brew);
     setDot('dot-jackett', d.jackett);
     setDot('dot-qbittorrent', d.qbittorrent);
-    // Show install buttons for what's missing (brew gets a guide, not auto-install).
-    $('btn-brew').style.display = d.brew ? 'none' : '';
-    $('btn-jackett').style.display = (d.brew && !d.jackett) ? '' : 'none';
-    $('btn-qbittorrent').style.display = (d.brew && !d.qbittorrent) ? '' : 'none';
+    $('pkgmgr-note').textContent = d.brew
+      ? `using ${d.pkg_mgr}`
+      : 'none found — use Download buttons';
+    // For each dep: hide when installed; else "Install" (pkg mgr) or "Download".
+    for (const dep of ['jackett', 'qbittorrent']) {
+      const btn = $('btn-' + dep);
+      if (d[dep]) { btn.style.display = 'none'; continue; }
+      btn.style.display = '';
+      btn.textContent = hasPkgMgr ? 'Install' : 'Download';
+    }
   }
 
-  async function installDep(name) {
+  async function depAction(name) {
+    if (!hasPkgMgr) {                      // no package manager → open download page
+      const url = await invoke('download_url', { name });
+      if (url) openUrl(url);
+      return;
+    }
     const btn = $('btn-' + name);
     const orig = btn.textContent;
     btn.disabled = true; btn.textContent = 'Installing…';
@@ -168,7 +183,9 @@
       await invoke('install_dep', { name });
       toast(name + ' installed');
     } catch (e) {
-      toast('Install failed — see Homebrew');
+      toast('Install failed — opening download page');
+      const url = await invoke('download_url', { name });
+      if (url) openUrl(url);
       console.error(e);
     } finally {
       btn.disabled = false; btn.textContent = orig;
@@ -176,9 +193,8 @@
     }
   }
 
-  $('btn-jackett').onclick = () => installDep('jackett');
-  $('btn-qbittorrent').onclick = () => installDep('qbittorrent');
-  $('btn-brew').onclick = () => openUrl('https://brew.sh');
+  $('btn-jackett').onclick = () => depAction('jackett');
+  $('btn-qbittorrent').onclick = () => depAction('qbittorrent');
   $('btn-refresh').onclick = refreshDeps;
 
   // ---- mode toggle ----

@@ -1,11 +1,12 @@
-name: Release (macOS DMG)
+name: Release
 
-# Build the Minitor desktop app for macOS (Apple Silicon) and attach the DMG to
-# a GitHub Release. Triggered by pushing a version tag, e.g. v0.4.0.
+# Build the Minitor desktop app for macOS (Apple Silicon), Windows (x64) and
+# Linux (x64), and attach the installers to a GitHub Release. Triggered by
+# pushing a version tag, e.g. v0.4.1.
 #
-# Intel (x86_64) is not built: GitHub's Intel macOS runners are being retired and
-# jobs sit queued indefinitely. Apple Silicon covers Macs from 2020 on; Intel
-# users can run from source (see README).
+# Each OS builds on its own native runner (Tauri can't cross-compile). Intel
+# macOS (x86_64) is omitted — GitHub's macos-13 runners sit queued indefinitely;
+# Intel Mac users can run from source.
 on:
   push:
     tags:
@@ -17,7 +18,23 @@ permissions:
 
 jobs:
   build:
-    runs-on: macos-14          # Apple Silicon
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-14
+            platform: macos
+            sidecar: build:sidecar:arm64
+            rust_target: aarch64-apple-darwin
+          - runner: windows-latest
+            platform: windows
+            sidecar: build:sidecar:win
+            rust_target: x86_64-pc-windows-msvc
+          - runner: ubuntu-22.04
+            platform: linux
+            sidecar: build:sidecar:linux
+            rust_target: x86_64-unknown-linux-gnu
+    runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
 
@@ -29,7 +46,19 @@ jobs:
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: aarch64-apple-darwin
+          targets: ${{ matrix.rust_target }}
+
+      # Tauri's Linux build needs GTK/WebKit + packaging tools.
+      - name: Install Linux system deps
+        if: matrix.platform == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf
 
       - name: Cache cargo
         uses: actions/cache@v4
@@ -38,32 +67,36 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             desktop/src-tauri/target
-          key: macos-14-cargo-${{ hashFiles('desktop/src-tauri/Cargo.toml') }}
+          key: ${{ matrix.runner }}-cargo-${{ hashFiles('desktop/src-tauri/Cargo.toml') }}
 
-      # Install JS deps for the root (pkg/esbuild) and the desktop (tauri CLI).
       - name: Install dependencies
         run: |
           npm ci
           npm --prefix desktop ci || npm --prefix desktop install
 
-      # Bundle + pkg + ad-hoc sign the Node sidecar.
+      # Bundle + pkg the Node sidecar for this platform (macOS also ad-hoc signs).
       - name: Build minitor sidecar
-        run: npm run build:sidecar:arm64
+        run: npm run ${{ matrix.sidecar }}
 
-      # Build the .app + .dmg (Tauri ad-hoc signs the bundle).
       - name: Build Tauri app
         working-directory: desktop
         run: npm run tauri build
 
-      - name: Locate DMG
-        id: dmg
+      # Collect every installer Tauri produced (.dmg / .msi / .exe / .deb / .AppImage / .rpm).
+      - name: Collect installers
+        shell: bash
         run: |
-          DMG=$(find desktop/src-tauri/target -name '*.dmg' | head -1)
-          echo "path=$DMG" >> "$GITHUB_OUTPUT"
-          echo "Found: $DMG"
+          mkdir -p artifacts
+          # Installers live under target/release/bundle/ — scoping here avoids
+          # picking up the raw app binary (minitor-desktop.exe) in target/release/.
+          find desktop/src-tauri/target/release/bundle -type f \
+            \( -name '*.dmg' -o -name '*.msi' -o -name '*.exe' \
+               -o -name '*.deb' -o -name '*.AppImage' -o -name '*.rpm' \) \
+            -print -exec cp {} artifacts/ \;
+          ls -lh artifacts
 
       - name: Upload to Release
         uses: softprops/action-gh-release@v2
         with:
-          files: ${{ steps.dmg.outputs.path }}
+          files: artifacts/*
           fail_on_unmatched_files: true

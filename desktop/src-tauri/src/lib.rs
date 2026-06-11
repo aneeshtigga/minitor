@@ -1,8 +1,8 @@
 //! Minitor desktop control panel — Tauri backend.
 //!
-//! Orchestrates dependencies (Homebrew/Jackett/qBittorrent) and the minitor
-//! Node sidecar, exposing a handful of commands to the webview UI. Closing the
-//! app stops the sidecar.
+//! Orchestrates dependencies (Jackett/qBittorrent, via the platform package
+//! manager) and the minitor Node sidecar, exposing a handful of commands to the
+//! webview UI. Closing the app stops the sidecar.
 
 mod deps;
 mod server;
@@ -29,6 +29,11 @@ fn check_deps() -> deps::DepStatus {
 #[tauri::command]
 fn install_dep(name: String) -> Result<String, String> {
     deps::install(&name)
+}
+
+#[tauri::command]
+fn download_url(name: String) -> String {
+    deps::download_url(&name).to_string()
 }
 
 #[tauri::command]
@@ -65,6 +70,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             check_deps,
             install_dep,
+            download_url,
             start_server,
             stop_server,
             status
