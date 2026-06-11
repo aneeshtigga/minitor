@@ -296,11 +296,18 @@ export async function searchTorrents(queries, match = {}) {
     if (jackettConfigured) {
       const result = await searchJackett(q).catch(() => null);
       if (result && result.rows.length) {
-        rows = result.rows;
-        pendingLate = result.pending;
-        break;
+        // Only commit to this query if at least one row survives relevance
+        // filtering. Without this check, "Her 2014" returning unrelated rows
+        // (e.g. "Not Her 2014") would stop the loop before the bare "Her" query
+        // could find the actual "Her.2013.1080p.BluRay" releases.
+        const hasRelevant = result.rows.some((r) => looksRelevant(r.fileName || '', titleWords, year));
+        if (hasRelevant) {
+          rows = result.rows;
+          pendingLate = result.pending;
+          break;
+        }
       }
-      // Jackett answered empty (or is down) for this query — try the next
+      // Jackett answered empty or all-irrelevant for this query — try the next
       // query, but never the plugin path.
       continue;
     }
