@@ -50,7 +50,8 @@ Set with `STREAM_MODE` (or the toggle in the desktop app):
 
 </div>
 
-Grab `Minitor_<version>_aarch64.dmg` *(Apple Silicon)* or `_x64.dmg` *(Intel)*.
+Grab `Minitor_<version>_aarch64.dmg` *(Apple Silicon)*. Intel Macs aren't
+prebuilt — run from source instead *(below)*.
 The app is a small control panel that tries to handle the setup for you:
 
 - Checks for **Homebrew → Jackett → qBittorrent**, and installs the missing ones
@@ -138,7 +139,7 @@ cd desktop && npm install
 npm run tauri build                # → src-tauri/target/release/bundle/dmg/*.dmg
 ```
 
-CI builds both arches automatically — push a `v*` tag (see `.github/workflows/release.yml`).
+CI builds the Apple Silicon DMG automatically — push a `v*` tag (see `.github/workflows/release.yml`).
 </details>
 
 ---

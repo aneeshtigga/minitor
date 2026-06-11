@@ -1,7 +1,11 @@
 name: Release (macOS DMG)
 
-# Build the Minitor desktop app for macOS (Apple Silicon + Intel) and attach the
-# DMGs to a GitHub Release. Triggered by pushing a version tag, e.g. v0.4.0.
+# Build the Minitor desktop app for macOS (Apple Silicon) and attach the DMG to
+# a GitHub Release. Triggered by pushing a version tag, e.g. v0.4.0.
+#
+# Intel (x86_64) is not built: GitHub's Intel macOS runners are being retired and
+# jobs sit queued indefinitely. Apple Silicon covers Macs from 2020 on; Intel
+# users can run from source (see README).
 on:
   push:
     tags:
@@ -13,19 +17,7 @@ permissions:
 
 jobs:
   build:
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - runner: macos-14            # Apple Silicon
-            arch: aarch64
-            rust_target: aarch64-apple-darwin
-            sidecar_script: build:sidecar:arm64
-          - runner: macos-13            # Intel
-            arch: x86_64
-            rust_target: x86_64-apple-darwin
-            sidecar_script: build:sidecar:x64
-    runs-on: ${{ matrix.runner }}
+    runs-on: macos-14          # Apple Silicon
     steps:
       - uses: actions/checkout@v4
 
@@ -37,7 +29,7 @@ jobs:
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ matrix.rust_target }}
+          targets: aarch64-apple-darwin
 
       - name: Cache cargo
         uses: actions/cache@v4
@@ -46,7 +38,7 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             desktop/src-tauri/target
-          key: ${{ matrix.runner }}-cargo-${{ hashFiles('desktop/src-tauri/Cargo.toml') }}
+          key: macos-14-cargo-${{ hashFiles('desktop/src-tauri/Cargo.toml') }}
 
       # Install JS deps for the root (pkg/esbuild) and the desktop (tauri CLI).
       - name: Install dependencies
@@ -54,12 +46,11 @@ jobs:
           npm ci
           npm --prefix desktop ci || npm --prefix desktop install
 
-      # Bundle + pkg + ad-hoc sign the Node sidecar for this arch.
+      # Bundle + pkg + ad-hoc sign the Node sidecar.
       - name: Build minitor sidecar
-        run: npm run ${{ matrix.sidecar_script }}
+        run: npm run build:sidecar:arm64
 
-      # Build the .app + .dmg (Tauri ad-hoc signs the bundle). Each runner is
-      # already native to its arch, so no --target cross-compile is needed.
+      # Build the .app + .dmg (Tauri ad-hoc signs the bundle).
       - name: Build Tauri app
         working-directory: desktop
         run: npm run tauri build
