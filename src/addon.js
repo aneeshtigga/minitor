@@ -8,6 +8,7 @@ import {
   detectLanguages,
   detectTags,
   parseSeasonEpisode,
+  matchesAbsolute,
   tierRank,
   PUBLIC_TRACKERS,
 } from './util.js';
@@ -32,6 +33,8 @@ function dedupeBySize(ranked, tolerance = 0.02) {
   return kept;
 }
 import { resolveImdb, searchQueries } from './cinemeta.js';
+import { resolveKitsu } from './kitsu.js';
+import { absoluteEpisode } from './tvdb.js';
 import { searchTorrents } from './search.js';
 
 export const addonRouter = express.Router();
@@ -76,14 +79,16 @@ const CATALOG_ID = 'minitor-cache';
 const CACHE_MODE = config.streamMode === 'cache';
 const MANIFEST = {
   id: CACHE_MODE ? 'org.minitor.cache' : 'org.minitor.direct',
-  version: '0.4.0',
+  version: '0.6.0',
   name: CACHE_MODE ? 'Minitor (cache)' : 'Minitor',
   description: CACHE_MODE
     ? 'Searches torrents (Jackett/Torznab), downloads them to your local qBittorrent, and streams the local file with seeking.'
     : 'Searches torrents (Jackett/Torznab) and streams them via Stremio\'s own engine (no local download).',
   resources: ['catalog', 'meta', 'stream'],
   types: ['movie', 'series'],
-  idPrefixes: ['minitor:', 'tt'],
+  // tt…  -> IMDb / Cinemeta (movies + standard TV)
+  // kitsu: -> Kitsu anime catalog (absolute episode numbering, e.g. kitsu:12:1164)
+  idPrefixes: ['minitor:', 'tt', 'kitsu:'],
   // The local-cache catalog only makes sense in cache mode (direct mode never
   // writes anything to disk, so there's nothing to list).
   catalogs: CACHE_MODE ? [{ type: 'movie', id: CATALOG_ID, name: 'minitor cache' }] : [],
@@ -275,98 +280,141 @@ addonRouter.get('/stream/:type/:id.json', async (req, res) => {
     return res.json({ streams: [] });
   }
 
-  // (b) real IMDb id -> cached-first, then live torrent search
-  if (id.startsWith('tt')) {
-    const [imdb, seasonStr, episodeStr] = id.split(':');
-    const season = seasonStr != null ? Number(seasonStr) : null;
-    const episode = episodeStr != null ? Number(episodeStr) : null;
-    const isEpisode = season != null && episode != null;
-    const streams = [];
+  // (b) external id -> cached-first, then live torrent search. Two id spaces:
+  //   tt…[:s:e]     IMDb / Cinemeta (movies + standard TV; SxxEyy numbering)
+  //   kitsu:…[:abs] Kitsu anime catalog (absolute numbering, e.g. kitsu:12:1164)
+  const isImdb = id.startsWith('tt');
+  const isKitsu = id.startsWith('kitsu:');
+  if (!isImdb && !isKitsu) return res.json({ streams: [] });
 
-    // (b1) Cached items for this id — for series, ONLY the matching episode.
-    const cachedEntries = cache.byImdb(imdb, { season, episode });
-    const cachedHashes = new Set();
-    for (const e of cachedEntries) {
-      const st = await cache.status(e.hash);
-      if (st.streamUrl) {
-        streams.push(cachedStream(st));
-        cachedHashes.add(e.hash.toLowerCase());
-      }
+  // Identity parsed cheaply from the id (no network) so the cached-first pass
+  // works even if Cinemeta/Kitsu is unreachable.
+  const parts = id.split(':');
+  let imdb; // cache-index key: real tt… for IMDb, synthetic "kitsu:<id>" for Kitsu
+  let season = null;
+  let episode = null;
+  let absolute = null; // anime absolute episode number, when known
+  if (isImdb) {
+    imdb = parts[0];
+    season = parts[1] != null ? Number(parts[1]) : null;
+    episode = parts[2] != null ? Number(parts[2]) : null;
+  } else {
+    imdb = `kitsu:${parts[1]}`;
+    const ep = parts[2] != null ? Number(parts[2]) : null;
+    absolute = Number.isFinite(ep) && ep > 0 ? ep : null; // straight from the id
+  }
+  const isEpisode = (season != null && episode != null) || absolute != null;
+
+  // Keep only torrents that identify as THIS episode: a matching SxxEyy, or —
+  // for absolute (anime) numbering — the absolute number on a name with no
+  // explicit S/E (so a different season is never mis-matched).
+  const matchesEpisode = (name) => {
+    if (!isEpisode) return true;
+    const se = parseSeasonEpisode(name);
+    if (season != null && episode != null && se.season === season && se.episode === episode) return true;
+    if (absolute != null && se.season == null && matchesAbsolute(name, absolute)) return true;
+    return false;
+  };
+
+  const streams = [];
+
+  // (b1) Cached items for this show, narrowed to the matching episode by name.
+  const cachedHashes = new Set();
+  for (const e of cache.byImdb(imdb)) {
+    if (!matchesEpisode(e.name || '')) continue;
+    const st = await cache.status(e.hash);
+    if (st.streamUrl) {
+      streams.push(cachedStream(st));
+      cachedHashes.add(e.hash.toLowerCase());
     }
-
-    // (b2) Live search via the user's qBittorrent plugins. Bounded by an overall
-    // timeout so a hung Cinemeta/Jackett can't block the request indefinitely;
-    // on timeout we fall through to the catch and return whatever (b1) cached.
-    try {
-      const meta = await withTimeout(resolveImdb(type, id), STREAM_SEARCH_BUDGET_MS, 'Cinemeta resolve');
-      const queries = searchQueries(meta);
-      // Pass the title + year so search.js can anchor relevance (avoids "Her"
-      // matching "HERO"/"Her Granddaughter"). For series we leave year null —
-      // the SxxEyy filter below disambiguates the episode instead.
-      const candidates = await withTimeout(
-        searchTorrents(queries, { title: meta.name, year: isEpisode ? null : meta.year }),
-        STREAM_SEARCH_BUDGET_MS,
-        'torrent search',
-      );
-      const cleanTitle = `${meta.name}${meta.year ? ` (${meta.year})` : ''}${isEpisode ? ` S${String(season).padStart(2, '0')}E${String(episode).padStart(2, '0')}` : ''}`;
-
-      // For an episode page, keep only torrents whose name parses to the SAME
-      // S/E (so E1's torrent never shows on the E3 page).
-      const matchesEpisode = (name) => {
-        if (!isEpisode) return true;
-        const se = parseSeasonEpisode(name);
-        return se.season === season && se.episode === episode;
-      };
-
-      // Drop dead swarms, sort, and dedup near-identical releases.
-      // Sort order (Torrentio-style, per your spec):
-      //   1. tier: 4K DV > 4K HDR > 4K > 1080p > 720p ...
-      //   2. seeders (desc)
-      //   3. single original language before multi-language
-      const ranked = candidates
-        .filter((c) => c.seeders > 0 && matchesEpisode(c.name))
-        .map((c) => ({
-          ...c,
-          tier: tierRank(c.name),
-          langCount: detectLanguages(c.name).length,
-        }))
-        .sort(
-          (a, b) =>
-            b.tier - a.tier ||
-            b.seeders - a.seeders ||
-            // 0 langs (unknown) or 1 lang rank above multi-language (2+)
-            (a.langCount > 1 ? 1 : 0) - (b.langCount > 1 ? 1 : 0),
-        );
-
-      // Dedup near-identical file sizes within the same tier — torrents within
-      // ~2% size in the same quality tier are almost always the same release
-      // re-uploaded; keep the best-seeded one (first, since already sorted).
-      const live = dedupeBySize(ranked);
-
-      for (const c of live.slice(0, 40)) {
-        if (cachedHashes.has(c.infohash.toLowerCase())) continue; // already shown as ⚡
-        // Build a readable per-result name: prefer the cleaned release name,
-        // fall back to the clean Cinemeta title when the release is mojibake.
-        const display = cleanReleaseName(c.name) || cleanTitle;
-        rememberMagnet(c.infohash, {
-          magnet: c.magnet,
-          // Store the actual RELEASE name (has SxxEyy + quality) so the cached
-          // entry is self-identifying; fall back to clean title only if mojibake.
-          name: display,
-          quality: c.quality,
-          poster: meta.poster || null,
-          imdb,
-          season,
-          episode,
-        });
-        streams.push(searchStream(c, display));
-      }
-    } catch (err) {
-      console.error('stream search error:', err.message);
-    }
-
-    return res.json({ streams });
   }
 
-  res.json({ streams: [] });
+  // (b2) Live search. Bounded by an overall timeout so a hung Cinemeta/Kitsu/
+  // Jackett can't block the request; on timeout we fall through to the catch
+  // and return whatever (b1) cached.
+  try {
+    let meta;
+    if (isImdb) {
+      meta = await withTimeout(resolveImdb(type, id), STREAM_SEARCH_BUDGET_MS, 'Cinemeta resolve');
+      // Optional accuracy boost for IMDb-catalog anime: when a TheTVDB key is
+      // configured, resolve this episode's absolute number (One Piece S23E09 ->
+      // 1164) so absolute-numbered torrents match. No-op (null) without a key —
+      // the Kitsu id space below already carries the absolute number for free.
+      if (season != null && episode != null) {
+        absolute = await withTimeout(
+          absoluteEpisode(meta.episodeTvdbId),
+          STREAM_SEARCH_BUDGET_MS,
+          'TheTVDB absolute',
+        ).catch(() => null);
+      }
+    } else {
+      // Kitsu: title/poster from the API; the absolute number is already in `id`.
+      meta = await withTimeout(resolveKitsu(id), STREAM_SEARCH_BUDGET_MS, 'Kitsu resolve');
+    }
+
+    const queries = searchQueries({ ...meta, season, episode, absolute });
+    // Pass the title + year so search.js can anchor relevance (avoids "Her"
+    // matching "HERO"/"Her Granddaughter"). For episodes we leave year null —
+    // the episode filter below disambiguates instead.
+    const candidates = await withTimeout(
+      searchTorrents(queries, { title: meta.name, year: isEpisode ? null : meta.year }),
+      STREAM_SEARCH_BUDGET_MS,
+      'torrent search',
+    );
+    const seLabel =
+      season != null && episode != null
+        ? ` S${String(season).padStart(2, '0')}E${String(episode).padStart(2, '0')}`
+        : absolute != null
+          ? ` - ${absolute}`
+          : '';
+    const cleanTitle = `${meta.name}${meta.year ? ` (${meta.year})` : ''}${seLabel}`;
+
+    // Drop dead swarms, sort, and dedup near-identical releases.
+    // Sort order (Torrentio-style, per your spec):
+    //   1. tier: 4K DV > 4K HDR > 4K > 1080p > 720p ...
+    //   2. seeders (desc)
+    //   3. single original language before multi-language
+    const ranked = candidates
+      .filter((c) => c.seeders > 0 && matchesEpisode(c.name))
+      .map((c) => ({
+        ...c,
+        tier: tierRank(c.name),
+        langCount: detectLanguages(c.name).length,
+      }))
+      .sort(
+        (a, b) =>
+          b.tier - a.tier ||
+          b.seeders - a.seeders ||
+          // 0 langs (unknown) or 1 lang rank above multi-language (2+)
+          (a.langCount > 1 ? 1 : 0) - (b.langCount > 1 ? 1 : 0),
+      );
+
+    // Dedup near-identical file sizes within the same tier — torrents within
+    // ~2% size in the same quality tier are almost always the same release
+    // re-uploaded; keep the best-seeded one (first, since already sorted).
+    const live = dedupeBySize(ranked);
+
+    for (const c of live.slice(0, 40)) {
+      if (cachedHashes.has(c.infohash.toLowerCase())) continue; // already shown as ⚡
+      // Build a readable per-result name: prefer the cleaned release name,
+      // fall back to the clean title when the release is mojibake.
+      const display = cleanReleaseName(c.name) || cleanTitle;
+      rememberMagnet(c.infohash, {
+        magnet: c.magnet,
+        // Store the actual RELEASE name (has the episode number + quality) so the
+        // cached entry is self-identifying; fall back to clean title if mojibake.
+        name: display,
+        quality: c.quality,
+        poster: meta.poster || null,
+        imdb,
+        season,
+        episode,
+      });
+      streams.push(searchStream(c, display));
+    }
+  } catch (err) {
+    console.error('stream search error:', err.message);
+  }
+
+  return res.json({ streams });
 });
