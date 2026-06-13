@@ -44,6 +44,44 @@ export function readApiKeyFromDisk() {
 }
 
 /**
+ * Disable Jackett's auto-updater by writing `UpdateDisabled: true` into the
+ * active ServerConfig.json.
+ *
+ * The desktop app installs a PINNED Jackett version (deps.rs downloads a fixed
+ * release), but Jackett self-updates hourly: it kills its own process to run
+ * JackettUpdater.exe, which fails when Jackett runs as a non-elevated console
+ * process — leaving Jackett DOWN (the UI's "yellow" state) until something
+ * restarts it, and looping forever because the update never sticks. The
+ * desktop launch also passes --NoUpdates (deps.rs), which covers the live
+ * session; this persists the setting so service/boot launches are covered too.
+ *
+ * Best-effort + idempotent. Only touches a config that has an APIKey (the real,
+ * active one). Takes effect on Jackett's next start; returns true once the
+ * setting is in place (already-set counts), false if no writable config found.
+ */
+export function disableAutoUpdate() {
+  for (const p of configPaths()) {
+    let cfg;
+    try {
+      cfg = JSON.parse(fs.readFileSync(p, 'utf8'));
+    } catch {
+      continue; // not at this path / not valid yet
+    }
+    if (!cfg.APIKey) continue; // not the active config
+    if (cfg.UpdateDisabled === true) return true; // already done — nothing to write
+    cfg.UpdateDisabled = true;
+    try {
+      fs.writeFileSync(p, `${JSON.stringify(cfg, null, 2)}\n`);
+      console.log('  ✓ Disabled Jackett auto-update (we pin a version) in ServerConfig.json');
+      return true;
+    } catch {
+      /* read-only / perms — try the next candidate path, else give up */
+    }
+  }
+  return false;
+}
+
+/**
  * If config.jackett.apiKey is empty, try to fill it from disk. Mutates the
  * shared config so searchJackett() picks it up. Returns true if Jackett is now
  * usable (url + key present).
@@ -199,8 +237,11 @@ export async function bootstrapJackett() {
   if (!config.jackett.url) return; // Jackett not configured at all
   const deadline = Date.now() + BOOTSTRAP_MAX_MS;
   let waiting = false;
+  let autoUpdateHandled = false;
   for (;;) {
     if (resolveApiKey()) {
+      // Once the config is readable, pin off the self-updater (idempotent).
+      if (!autoUpdateHandled) autoUpdateHandled = disableAutoUpdate();
       let cookie;
       let reachable = true;
       try {

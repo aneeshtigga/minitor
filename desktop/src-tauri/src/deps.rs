@@ -318,7 +318,9 @@ mod platform {
         }
         let bin = jackett_direct_bin();
         if Path::new(&bin).exists() {
-            let _ = command(&bin).spawn();
+            // --NoUpdates: skip Jackett's self-update (we pin a version); see the
+            // Windows start_jackett_service for the full rationale.
+            let _ = command(&bin).arg("--NoUpdates").spawn();
         }
     }
 }
@@ -430,7 +432,10 @@ mod platform {
             return;
         }
         if let Some(exe) = jackett_console_path() {
-            let _ = command(&exe).spawn();
+            // --NoUpdates: we pin a Jackett version (see install_jackett_direct);
+            // its hourly self-update kills this process to run JackettUpdater.exe,
+            // which fails for a non-elevated console launch and leaves Jackett down.
+            let _ = command(&exe).arg("--NoUpdates").spawn();
         }
     }
 
@@ -570,7 +575,9 @@ mod platform {
         // Fall back to running the directly-downloaded binary.
         let bin = jackett_direct_bin();
         if Path::new(&bin).exists() {
-            let _ = command(&bin).spawn();
+            // --NoUpdates: skip Jackett's self-update (we pin a version); see the
+            // Windows start_jackett_service for the full rationale.
+            let _ = command(&bin).arg("--NoUpdates").spawn();
         }
     }
 }
