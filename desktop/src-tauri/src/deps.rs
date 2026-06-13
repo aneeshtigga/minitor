@@ -323,7 +323,7 @@ mod platform {
     }
 }
 
-// ───────────────────────── Windows (winget) ─────────────────────────
+// ───────────────────────── Windows (direct download) ─────────────────────────
 #[cfg(target_os = "windows")]
 mod platform {
     use super::*;
@@ -342,7 +342,7 @@ mod platform {
     }
 
     pub fn jackett_installed() -> bool {
-        winget_has("Jackett.Jackett")
+        winget_has("Jackett.Jackett") || jackett_console_path().is_some()
     }
 
     pub fn qbittorrent_installed() -> bool {
@@ -350,19 +350,60 @@ mod platform {
     }
 
     pub fn install(name: &str) -> Result<String, String> {
-        if !has_cmd("winget") {
-            return Err("winget not found. Install the dependency from its download page, then Refresh.".into());
+        match name {
+            "jackett" => install_jackett_direct(),
+            "qbittorrent" => {
+                if !has_cmd("winget") {
+                    return Err("winget not found. Install qBittorrent from its download page, then Refresh.".into());
+                }
+                run(
+                    "winget",
+                    &["install", "-e", "--id", "qBittorrent.qBittorrent",
+                      "--accept-package-agreements", "--accept-source-agreements"],
+                    name,
+                )
+            }
+            other => Err(format!("Unknown dependency: {other}")),
         }
-        let id = match name {
-            "jackett" => "Jackett.Jackett",
-            "qbittorrent" => "qBittorrent.qBittorrent",
-            other => return Err(format!("Unknown dependency: {other}")),
-        };
-        run(
-            "winget",
-            &["install", "-e", "--id", id, "--accept-package-agreements", "--accept-source-agreements"],
-            name,
-        )
+    }
+
+    fn install_jackett_direct() -> Result<String, String> {
+        let url = "https://github.com/Jackett/Jackett/releases/download/v0.24.2043/Jackett.Installer.Windows.exe";
+        let tmp = std::env::temp_dir().join("jackett-installer.exe");
+        let tmp_str = tmp.to_string_lossy().to_string();
+
+        let dl = command("curl")
+            .args(["-fsSL", "-o", &tmp_str, url])
+            .output()
+            .map_err(|e| format!("Download failed: {e}"))?;
+        if !dl.status.success() {
+            return Err(format!(
+                "Jackett download failed:\n{}",
+                String::from_utf8_lossy(&dl.stderr)
+            ));
+        }
+
+        // Run the NSIS installer silently. Start-Process -Verb RunAs is required
+        // to trigger the UAC elevation prompt — CreateProcess alone won't do it.
+        let ps_cmd = format!(
+            "Start-Process -FilePath '{}' -ArgumentList '/S' -Verb RunAs -Wait",
+            tmp_str.replace('\'', "''")
+        );
+        let install = command("powershell")
+            .args(["-NoProfile", "-NonInteractive", "-Command", &ps_cmd])
+            .output()
+            .map_err(|e| format!("Installer failed: {e}"))?;
+        let _ = std::fs::remove_file(&tmp);
+
+        if !install.status.success() {
+            return Err(format!(
+                "Jackett installer failed:\n{}",
+                String::from_utf8_lossy(&install.stderr)
+            ));
+        }
+
+        start_jackett_service();
+        Ok("Jackett installed".to_string())
     }
 
     /// Bring Jackett up. The winget package installs a Windows service, but
@@ -417,10 +458,11 @@ mod platform {
     }
 }
 
-// ───────────────────────── Linux (apt/dnf/pacman) ─────────────────────────
+// ───────────────────────── Linux (apt/dnf/pacman + direct download) ─────────────────────────
 #[cfg(target_os = "linux")]
 mod platform {
     use super::*;
+    use std::path::Path;
 
     fn detect_mgr() -> Option<&'static str> {
         for m in ["apt-get", "dnf", "pacman"] {
@@ -435,8 +477,17 @@ mod platform {
         detect_mgr().map(|m| m.to_string())
     }
 
+    fn jackett_direct_dir() -> String {
+        let home = std::env::var("HOME").unwrap_or_else(|_| "~".to_string());
+        format!("{home}/.local/share/Jackett")
+    }
+
+    fn jackett_direct_bin() -> String {
+        format!("{}/jackett", jackett_direct_dir())
+    }
+
     pub fn jackett_installed() -> bool {
-        has_cmd("jackett") || has_cmd("Jackett")
+        has_cmd("jackett") || has_cmd("Jackett") || Path::new(&jackett_direct_bin()).exists()
     }
 
     pub fn qbittorrent_installed() -> bool {
@@ -444,28 +495,83 @@ mod platform {
     }
 
     pub fn install(name: &str) -> Result<String, String> {
-        let mgr = detect_mgr()
-            .ok_or("No supported package manager (apt/dnf/pacman). Install the dependency manually, then Refresh.")?;
-        // Package names differ a little across distros; these cover the common case.
-        let pkg = match (name, mgr) {
-            ("qbittorrent", _) => "qbittorrent",
-            ("jackett", _) => "jackett",
-            (other, _) => return Err(format!("Unknown dependency: {other}")),
+        match name {
+            // Jackett is not in standard distro repos — download directly.
+            "jackett" => install_jackett_direct(),
+            "qbittorrent" => {
+                let mgr = detect_mgr().ok_or(
+                    "No supported package manager (apt/dnf/pacman). Install qBittorrent manually, then Refresh.",
+                )?;
+                let elevate = if has_cmd("pkexec") { "pkexec" } else { "sudo" };
+                let args: Vec<&str> = match mgr {
+                    "apt-get" => vec![elevate, "apt-get", "install", "-y", "qbittorrent"],
+                    "dnf"     => vec![elevate, "dnf",     "install", "-y", "qbittorrent"],
+                    "pacman"  => vec![elevate, "pacman",  "-S", "--noconfirm", "qbittorrent"],
+                    _ => unreachable!(),
+                };
+                run(args[0], &args[1..], name)
+            }
+            other => Err(format!("Unknown dependency: {other}")),
+        }
+    }
+
+    fn install_jackett_direct() -> Result<String, String> {
+        let asset = match std::env::consts::ARCH {
+            "aarch64" => "Jackett.Binaries.LinuxARM64.tar.gz",
+            "arm"     => "Jackett.Binaries.LinuxARM32.tar.gz",
+            _         => "Jackett.Binaries.LinuxAMD64.tar.gz",
         };
-        // Most installs need root; use pkexec for a GUI password prompt, else sudo.
-        let elevate = if has_cmd("pkexec") { "pkexec" } else { "sudo" };
-        let args: Vec<&str> = match mgr {
-            "apt-get" => vec![elevate, "apt-get", "install", "-y", pkg],
-            "dnf" => vec![elevate, "dnf", "install", "-y", pkg],
-            "pacman" => vec![elevate, "pacman", "-S", "--noconfirm", pkg],
-            _ => unreachable!(),
-        };
-        run(args[0], &args[1..], name)
+        let url = format!(
+            "https://github.com/Jackett/Jackett/releases/download/v0.24.2043/{asset}"
+        );
+        let dir = jackett_direct_dir();
+        std::fs::create_dir_all(&dir)
+            .map_err(|e| format!("Could not create install directory: {e}"))?;
+
+        let tmp = format!("{dir}/jackett-install.tar.gz");
+
+        let dl = command("curl")
+            .args(["-fsSL", "-o", &tmp, &url])
+            .output()
+            .map_err(|e| format!("Download failed: {e}"))?;
+        if !dl.status.success() {
+            return Err(format!(
+                "Jackett download failed:\n{}",
+                String::from_utf8_lossy(&dl.stderr)
+            ));
+        }
+
+        let ex = command("tar")
+            .args(["-xzf", &tmp, "-C", &dir])
+            .output()
+            .map_err(|e| format!("Extraction failed: {e}"))?;
+        let _ = std::fs::remove_file(&tmp);
+        if !ex.status.success() {
+            return Err(format!(
+                "Jackett extraction failed:\n{}",
+                String::from_utf8_lossy(&ex.stderr)
+            ));
+        }
+
+        start_jackett_service();
+        Ok(format!("Jackett installed to {dir}"))
     }
 
     pub fn start_jackett_service() {
-        // Best-effort: try a systemd user/system service if packaged that way.
-        let _ = command("systemctl").args(["--user", "start", "jackett"]).output();
+        // Try a systemd user service first (covers distro packages).
+        let via_systemd = command("systemctl")
+            .args(["--user", "start", "jackett"])
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+        if via_systemd {
+            return;
+        }
+        // Fall back to running the directly-downloaded binary.
+        let bin = jackett_direct_bin();
+        if Path::new(&bin).exists() {
+            let _ = command(&bin).spawn();
+        }
     }
 }
 
