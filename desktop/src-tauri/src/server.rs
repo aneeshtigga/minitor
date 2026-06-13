@@ -52,7 +52,7 @@ pub fn start(app: &AppHandle, mode: &str) -> Result<(), String> {
     let public = public_url();
     let data = data_dir(app);
 
-    let sidecar = app
+    let mut sidecar = app
         .shell()
         .sidecar("minitor")
         .map_err(|e| format!("Failed to locate minitor sidecar: {e}"))?
@@ -65,16 +65,19 @@ pub fn start(app: &AppHandle, mode: &str) -> Result<(), String> {
         // Jackett's ServerConfig.json (see src/jackett-setup.js).
         .env("QBIT_URL", "http://127.0.0.1:8080")
         .env("QBIT_USER", "admin")
-        .env("QBIT_PASS", "adminadmin")
-        // TheTVDB key for anime absolute-episode lookup (One Piece S23E09 ->
-        // 1164). Forwarded from the host env if set; otherwise empty, which
-        // disables the feature. The sidecar also reads a .env from the data dir
-        // (see src/config.js), so users can drop the key there instead.
-        .env(
-            "TVDB_API_KEY",
-            std::env::var("TVDB_API_KEY").unwrap_or_default(),
-        )
-        .env("TVDB_PIN", std::env::var("TVDB_PIN").unwrap_or_default());
+        .env("QBIT_PASS", "adminadmin");
+
+    // TheTVDB creds for anime absolute-episode lookup (One Piece S23E09 -> 1164).
+    // Forward from the host env ONLY when non-empty: passing an empty value would
+    // SHADOW a key the user placed in the data-dir .env, because dotenv refuses to
+    // override an already-set variable (see src/config.js).
+    for key in ["TVDB_API_KEY", "TVDB_PIN"] {
+        if let Ok(val) = std::env::var(key) {
+            if !val.is_empty() {
+                sidecar = sidecar.env(key, val);
+            }
+        }
+    }
 
     let (mut rx, child) = sidecar
         .spawn()
