@@ -67,7 +67,7 @@ fn has_cmd(cmd: &str) -> bool {
         .unwrap_or(false)
 }
 
-// ───────────────────────── macOS (Homebrew) ─────────────────────────
+// ───────────────────────── macOS (Homebrew / direct download) ─────────────────────────
 #[cfg(target_os = "macos")]
 mod platform {
     use super::*;
@@ -96,28 +96,229 @@ mod platform {
             .unwrap_or(false)
     }
 
+    /// Install directory used when downloading Jackett directly (no Homebrew).
+    fn jackett_direct_dir() -> String {
+        let home = std::env::var("HOME").unwrap_or_else(|_| "~".to_string());
+        format!("{home}/Applications/Jackett")
+    }
+
+    fn jackett_direct_bin() -> String {
+        format!("{}/jackett", jackett_direct_dir())
+    }
+
     pub fn jackett_installed() -> bool {
-        brew_list_has("jackett") || Path::new("/Applications/Jackett.app").exists()
+        brew_list_has("jackett")
+            || Path::new("/Applications/Jackett.app").exists()
+            || Path::new(&jackett_direct_bin()).exists()
+    }
+
+    fn qbittorrent_app_path() -> Option<String> {
+        let home = std::env::var("HOME").unwrap_or_default();
+        for p in [
+            "/Applications/qBittorrent.app",
+            "/Applications/qbittorrent.app",
+            &format!("{home}/Applications/qBittorrent.app"),
+            &format!("{home}/Applications/qbittorrent.app"),
+        ] {
+            if Path::new(p).exists() {
+                return Some(p.to_string());
+            }
+        }
+        None
     }
 
     pub fn qbittorrent_installed() -> bool {
-        Path::new("/Applications/qbittorrent.app").exists() || brew_list_has("qbittorrent")
+        brew_list_has("qbittorrent") || qbittorrent_app_path().is_some()
     }
 
     pub fn install(name: &str) -> Result<String, String> {
-        let brew = brew_path()
-            .ok_or("Homebrew not found. Install it from https://brew.sh, then Refresh.")?;
-        let args: Vec<&str> = match name {
-            "jackett" => vec!["install", "jackett"],
-            "qbittorrent" => vec!["install", "--cask", "qbittorrent"],
-            other => return Err(format!("Unknown dependency: {other}")),
+        match name {
+            // Both downloaded directly from GitHub — avoids Homebrew, which
+            // calls xcrun internally and requires Xcode Command Line Tools.
+            "jackett" => install_jackett_direct(),
+            "qbittorrent" => install_qbittorrent_direct(),
+            other => Err(format!("Unknown dependency: {other}")),
+        }
+    }
+
+    fn install_qbittorrent_direct() -> Result<String, String> {
+        let arch_pat = if std::env::consts::ARCH == "aarch64" { "arm64" } else { "x86_64" };
+
+        // Resolve the latest release DMG URL via the GitHub API.
+        let api = command("/usr/bin/curl")
+            .args([
+                "-fsSL",
+                "-H", "Accept: application/vnd.github+json",
+                "https://api.github.com/repos/qbittorrent/qBittorrent/releases/latest",
+            ])
+            .output()
+            .map_err(|e| format!("Failed to fetch release info: {e}"))?;
+        if !api.status.success() {
+            return Err(format!(
+                "Could not fetch qBittorrent release info:\n{}",
+                String::from_utf8_lossy(&api.stderr)
+            ));
+        }
+        let json = String::from_utf8_lossy(&api.stdout);
+        let url = extract_download_url(&json, arch_pat, ".dmg")
+            .ok_or_else(|| format!("No macOS {arch_pat} DMG found in latest qBittorrent release"))?;
+
+        // Download the DMG.
+        let tmp = "/tmp/qbittorrent-installer.dmg";
+        let dl = command("/usr/bin/curl")
+            .args(["-fsSL", "-o", tmp, &url])
+            .output()
+            .map_err(|e| format!("Download failed: {e}"))?;
+        if !dl.status.success() {
+            return Err(format!(
+                "qBittorrent download failed:\n{}",
+                String::from_utf8_lossy(&dl.stderr)
+            ));
+        }
+
+        // Mount, copy .app, unmount — all with system tools (no Xcode needed).
+        let mount = command("/usr/bin/hdiutil")
+            .args(["attach", "-nobrowse", "-quiet", "-plist", tmp])
+            .output()
+            .map_err(|e| format!("hdiutil attach failed: {e}"))?;
+        if !mount.status.success() {
+            let _ = std::fs::remove_file(tmp);
+            return Err(format!(
+                "Could not mount DMG:\n{}",
+                String::from_utf8_lossy(&mount.stderr)
+            ));
+        }
+        let plist = String::from_utf8_lossy(&mount.stdout);
+        let volume = extract_plist_string(&plist, "mount-point")
+            .ok_or_else(|| "Could not determine DMG mount point".to_string())?;
+
+        let app_src = find_app_in_dir(&volume)
+            .ok_or_else(|| format!("No .app found in mounted volume {volume}"))?;
+        let app_name = std::path::Path::new(&app_src)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("qBittorrent.app");
+
+        let home = std::env::var("HOME").unwrap_or_else(|_| "~".to_string());
+        let apps_dir = format!("{home}/Applications");
+        let _ = std::fs::create_dir_all(&apps_dir);
+        let app_dest = format!("{apps_dir}/{app_name}");
+
+        let cp = command("/bin/cp")
+            .args(["-r", &app_src, &app_dest])
+            .output()
+            .map_err(|e| format!("Copy failed: {e}"))?;
+
+        // Always detach and clean up, even if copy failed.
+        let _ = command("/usr/bin/hdiutil").args(["detach", &volume, "-quiet"]).output();
+        let _ = std::fs::remove_file(tmp);
+
+        if !cp.status.success() {
+            return Err(format!(
+                "Could not copy app:\n{}",
+                String::from_utf8_lossy(&cp.stderr)
+            ));
+        }
+
+        // Remove the quarantine flag curl adds on downloaded files.
+        let _ = command("/usr/bin/xattr")
+            .args(["-dr", "com.apple.quarantine", &app_dest])
+            .output();
+
+        Ok(format!("qBittorrent installed to {app_dest}"))
+    }
+
+    /// Extract the first `browser_download_url` from a GitHub releases JSON
+    /// response that matches both `arch_pat` and `ext`.
+    fn extract_download_url(json: &str, arch_pat: &str, ext: &str) -> Option<String> {
+        for chunk in json.split("browser_download_url") {
+            if let Some(start) = chunk.find("https://") {
+                if let Some(end) = chunk[start..].find('"') {
+                    let url = &chunk[start..start + end];
+                    if url.contains(arch_pat) && url.ends_with(ext) {
+                        return Some(url.to_string());
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    /// Pull a string value out of an hdiutil plist by key name.
+    fn extract_plist_string(plist: &str, key: &str) -> Option<String> {
+        let marker = format!("{key}</key>");
+        let pos = plist.find(&marker)?;
+        let after = &plist[pos + marker.len()..];
+        let start = after.find("<string>")? + "<string>".len();
+        let end = after[start..].find("</string>")?;
+        Some(after[start..start + end].trim().to_string())
+    }
+
+    /// Return the path of the first `.app` bundle found directly inside `dir`.
+    fn find_app_in_dir(dir: &str) -> Option<String> {
+        for entry in std::fs::read_dir(dir).ok()?.flatten() {
+            let name = entry.file_name();
+            if name.to_string_lossy().ends_with(".app") {
+                return Some(entry.path().to_string_lossy().to_string());
+            }
+        }
+        None
+    }
+
+    fn install_jackett_direct() -> Result<String, String> {
+        let asset = if std::env::consts::ARCH == "aarch64" {
+            "Jackett.Binaries.macOSARM64.tar.gz"
+        } else {
+            "Jackett.Binaries.macOS.tar.gz"
         };
-        run(&brew, &args, name)
+        let url = format!(
+            "https://github.com/Jackett/Jackett/releases/download/v0.24.2043/{asset}"
+        );
+        let dir = jackett_direct_dir();
+        std::fs::create_dir_all(&dir)
+            .map_err(|e| format!("Could not create install directory: {e}"))?;
+
+        let tmp = format!("{dir}/jackett-install.tar.gz");
+
+        let dl = command("/usr/bin/curl")
+            .args(["-fsSL", "-o", &tmp, &url])
+            .output()
+            .map_err(|e| format!("Download failed: {e}"))?;
+        if !dl.status.success() {
+            return Err(format!(
+                "Jackett download failed:\n{}",
+                String::from_utf8_lossy(&dl.stderr)
+            ));
+        }
+
+        let ex = command("/usr/bin/tar")
+            .args(["-xzf", &tmp, "-C", &dir])
+            .output()
+            .map_err(|e| format!("Extraction failed: {e}"))?;
+        let _ = std::fs::remove_file(&tmp);
+        if !ex.status.success() {
+            return Err(format!(
+                "Jackett extraction failed:\n{}",
+                String::from_utf8_lossy(&ex.stderr)
+            ));
+        }
+
+        start_jackett_service();
+        Ok(format!("Jackett installed to {dir}"))
     }
 
     pub fn start_jackett_service() {
-        if let Some(brew) = brew_path() {
-            let _ = command(&brew).args(["services", "start", "jackett"]).output();
+        // Prefer the brew-managed service if brew-installed; otherwise run the
+        // directly-downloaded binary.
+        if brew_list_has("jackett") {
+            if let Some(brew) = brew_path() {
+                let _ = command(&brew).args(["services", "start", "jackett"]).output();
+                return;
+            }
+        }
+        let bin = jackett_direct_bin();
+        if Path::new(&bin).exists() {
+            let _ = command(&bin).spawn();
         }
     }
 }
