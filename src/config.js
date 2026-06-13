@@ -9,6 +9,13 @@ import os from 'node:os';
 // overwrites an already-set key, so the host environment and cwd .env win.
 dotenv.config();
 const DATA_DIR = process.env.MINITOR_DATA_DIR || path.join(process.cwd(), 'data');
+// A parent process (the desktop sidecar) may forward TVDB_* as EMPTY strings when
+// the host env has no key. An empty value would block the data-dir .env from
+// supplying one — dotenv won't override an already-set var — so clear empties
+// before loading it.
+for (const k of ['TVDB_API_KEY', 'TVDB_PIN']) {
+  if (process.env[k] === '') delete process.env[k];
+}
 dotenv.config({ path: path.join(DATA_DIR, '.env') });
 
 /**
