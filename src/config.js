@@ -1,6 +1,15 @@
-import 'dotenv/config';
+import dotenv from 'dotenv';
 import path from 'node:path';
 import os from 'node:os';
+
+// Load environment: first a .env in the working dir (dev: `npm start` from the
+// repo root), then a .env from the data dir. The packaged desktop sidecar runs
+// with an unpredictable cwd, so the data-dir .env (MINITOR_DATA_DIR) is where a
+// user drops settings like TVDB_API_KEY for the installed app. dotenv never
+// overwrites an already-set key, so the host environment and cwd .env win.
+dotenv.config();
+const DATA_DIR = process.env.MINITOR_DATA_DIR || path.join(process.cwd(), 'data');
+dotenv.config({ path: path.join(DATA_DIR, '.env') });
 
 /**
  * Central config, read once from the environment.
@@ -14,10 +23,9 @@ function clean(url) {
 const DOWNLOAD_DIR =
   process.env.DOWNLOAD_DIR || path.join(os.homedir(), 'Downloads', 'minitor');
 
-// Where the cache index ("database") lives. Defaults to ./data relative to the
-// working directory, but a parent process (e.g. the desktop app, or a bundled
-// binary whose cwd is unpredictable) can point it at a stable app-data dir.
-const DATA_DIR = process.env.MINITOR_DATA_DIR || path.join(process.cwd(), 'data');
+// DATA_DIR (the cache index location) is resolved above, before the data-dir
+// .env load. A parent process (desktop app / bundled binary with an
+// unpredictable cwd) points it at a stable app-data dir via MINITOR_DATA_DIR.
 
 // Streaming mode — the one knob that picks which "version" of minitor runs:
 //   'direct' : hand Stremio the infoHash and let ITS engine stream the torrent
@@ -52,6 +60,20 @@ export const config = {
     url: clean(process.env.JACKETT_URL || ''),
     apiKey: process.env.JACKETT_API_KEY || '',
     enabled: Boolean(process.env.JACKETT_URL && process.env.JACKETT_API_KEY),
+  },
+
+  // TheTVDB v4 API — used only to resolve an episode's ABSOLUTE number for
+  // anime-style numbering (e.g. One Piece S23E09 == absolute 1164), which is how
+  // most ongoing-anime torrents are named, so an IMDb-catalog (tt…) request can
+  // still find them. Optional: when TVDB_API_KEY is unset the lookup is skipped
+  // and search falls back to SxxEyy queries only.
+  //   TVDB_API_KEY — your v4 API key (thetvdb.com -> Account -> API).
+  //   TVDB_PIN     — subscriber PIN, required ONLY for "user-supported" keys;
+  //                  leave unset for project/company keys.
+  tvdb: {
+    apiKey: process.env.TVDB_API_KEY || '',
+    pin: process.env.TVDB_PIN || '',
+    enabled: Boolean(process.env.TVDB_API_KEY),
   },
 
   downloadDir: DOWNLOAD_DIR,

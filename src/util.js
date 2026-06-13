@@ -178,6 +178,25 @@ export function parseSeasonEpisode(name = '') {
 }
 
 /**
+ * Does a release name carry a given ABSOLUTE episode number as a standalone
+ * token? Used for anime numbering, e.g. matchesAbsolute("[SubsPlease] One Piece
+ * - 1164 (1080p)", 1164) === true. We first strip the number-bearing tags that
+ * would otherwise cause false positives (resolutions like 1080p/1920x1080,
+ * codecs like x264/x265, bit depth, years in parens), then look for the number
+ * (allowing leading zeros) bounded by non-digits.
+ */
+export function matchesAbsolute(name = '', abs) {
+  if (!abs) return false;
+  const cleaned = name
+    .replace(/\b\d{3,4}[pi]\b/gi, ' ') // 1080p 720p 2160p
+    .replace(/\b\d{3,4}x\d{3,4}\b/gi, ' ') // 1920x1080
+    .replace(/\b[xh]\.?26[45]\b/gi, ' ') // x264 h265
+    .replace(/\b\d{1,2}[\s.]?bit\b/gi, ' ') // 10bit
+    .replace(/[([]\s*\d{4}\s*[)\]]/g, ' '); // (2024) [2024]
+  return new RegExp(`(?<![\\d.])0*${abs}(?![\\d.])`).test(cleaned);
+}
+
+/**
  * Detect HDR/Dolby Vision/codec/audio tags from a release name, returned as a
  * short label list (e.g. ["DV", "HDR", "Atmos"]). Mirrors Torrentio's
  * "4k DV | HDR" style annotations.
