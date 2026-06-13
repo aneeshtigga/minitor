@@ -27,12 +27,17 @@ export async function resolveImdb(type, rawId) {
     if (!res.ok) throw new Error(`Cinemeta ${type}/${imdb} -> HTTP ${res.status}`);
     const data = await res.json();
     const m = data.meta || {};
-    // Map "season:episode" -> per-episode TheTVDB id (Cinemeta carries it on each
-    // video). Used to resolve the episode's absolute number for anime numbering.
-    const episodeTvdb = {};
+    // Map "season:episode" -> { tvdbId, released } from each Cinemeta video.
+    // Used to resolve the episode's absolute number for anime numbering: the
+    // air date drives the (key-less) AniList lookup, the tvdb id the optional
+    // TheTVDB one.
+    const episodes = {};
     for (const v of m.videos || []) {
-      if (v.tvdb_id != null && v.season != null && v.episode != null) {
-        episodeTvdb[`${v.season}:${v.episode}`] = v.tvdb_id;
+      if (v.season != null && v.episode != null) {
+        episodes[`${v.season}:${v.episode}`] = {
+          tvdbId: v.tvdb_id ?? null,
+          released: v.released || v.firstAired || null,
+        };
       }
     }
     // If Cinemeta has no title (rare / unreleased), `name` stays null — callers
@@ -44,20 +49,22 @@ export async function resolveImdb(type, rawId) {
       year: (m.year || m.releaseInfo || '').toString().slice(0, 4),
       poster: m.poster || null,
       background: m.background || null,
-      episodeTvdb,
+      episodes,
     };
     cache.set(key, base);
   }
 
   const s = season ? Number(season) : null;
   const e = episode ? Number(episode) : null;
+  const ep = s != null && e != null ? base.episodes?.[`${s}:${e}`] : null;
   return {
     ...base,
     season: s,
     episode: e,
-    // The TheTVDB episode id for this S/E (if any) — addon.js turns it into an
-    // absolute number for anime-style torrent search.
-    episodeTvdbId: s != null && e != null ? base.episodeTvdb?.[`${s}:${e}`] ?? null : null,
+    // Per-episode hooks addon.js turns into an absolute number for anime search:
+    // the air date (AniList, key-less) and the TheTVDB episode id (optional).
+    episodeReleased: ep?.released ?? null,
+    episodeTvdbId: ep?.tvdbId ?? null,
   };
 }
 

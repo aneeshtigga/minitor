@@ -34,6 +34,7 @@ function dedupeBySize(ranked, tolerance = 0.02) {
 }
 import { resolveImdb, searchQueries } from './cinemeta.js';
 import { resolveKitsu } from './kitsu.js';
+import { absoluteFromImdb } from './anilist.js';
 import { absoluteEpisode } from './tvdb.js';
 import { searchTorrents } from './search.js';
 
@@ -336,16 +337,24 @@ addonRouter.get('/stream/:type/:id.json', async (req, res) => {
     let meta;
     if (isImdb) {
       meta = await withTimeout(resolveImdb(type, id), STREAM_SEARCH_BUDGET_MS, 'Cinemeta resolve');
-      // Optional accuracy boost for IMDb-catalog anime: when a TheTVDB key is
-      // configured, resolve this episode's absolute number (One Piece S23E09 ->
-      // 1164) so absolute-numbered torrents match. No-op (null) without a key —
-      // the Kitsu id space below already carries the absolute number for free.
+      // Anime numbering for IMDb-catalog requests: resolve this episode's
+      // absolute number (One Piece S23E09 -> 1164) so absolute-numbered torrents
+      // match. Primary source is AniList (key-less, matches by air date); falls
+      // back to TheTVDB only if AniList can't resolve it AND a key is configured.
+      // Non-anime shows resolve to null and behave exactly as before.
       if (season != null && episode != null) {
         absolute = await withTimeout(
-          absoluteEpisode(meta.episodeTvdbId),
+          absoluteFromImdb(imdb, meta.episodeReleased),
           STREAM_SEARCH_BUDGET_MS,
-          'TheTVDB absolute',
+          'AniList absolute',
         ).catch(() => null);
+        if (absolute == null && config.tvdb.enabled) {
+          absolute = await withTimeout(
+            absoluteEpisode(meta.episodeTvdbId),
+            STREAM_SEARCH_BUDGET_MS,
+            'TheTVDB absolute',
+          ).catch(() => null);
+        }
       }
     } else {
       // Kitsu: title/poster from the API; the absolute number is already in `id`.
