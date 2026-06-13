@@ -80,7 +80,7 @@ const CATALOG_ID = 'minitor-cache';
 const CACHE_MODE = config.streamMode === 'cache';
 const MANIFEST = {
   id: CACHE_MODE ? 'org.minitor.cache' : 'org.minitor.direct',
-  version: '0.6.1',
+  version: '0.6.2',
   name: CACHE_MODE ? 'Minitor (cache)' : 'Minitor',
   description: CACHE_MODE
     ? 'Searches torrents (Jackett/Torznab), downloads them to your local qBittorrent, and streams the local file with seeking.'
