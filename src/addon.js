@@ -36,6 +36,7 @@ import { resolveImdb, searchQueries } from './cinemeta.js';
 import { resolveKitsu } from './kitsu.js';
 import { absoluteFromImdb, isAnime, animeEpisodeCount } from './anilist.js';
 import { absoluteEpisode } from './tvdb.js';
+import { findPackStreams } from './packs.js';
 import { searchTorrents } from './search.js';
 
 export const addonRouter = express.Router();
@@ -244,7 +245,9 @@ function searchStream(c, displayName) {
     // 0 is correct for single-video torrents; Stremio re-selects the largest
     // file if 0 isn't the video.
     infoHash: c.infohash,
-    fileIdx: 0,
+    // The specific file to play. 0 for single-video torrents; for a pack it's
+    // the index of the episode's file within the torrent (resolved in packs.js).
+    fileIdx: c.fileIdx ?? 0,
     sources,
   };
 }
@@ -432,6 +435,40 @@ addonRouter.get('/stream/:type/:id.json', async (req, res) => {
         episode,
       });
       streams.push(searchStream(c, display));
+    }
+
+    // Pack fallback: when an anime episode has few/no seeded single-episode
+    // releases (typical for older/filler episodes), resolve it out of a batch
+    // pack — find the episode's file inside the pack and stream just that file.
+    // Bounded, and only when direct results are thin, to avoid extra latency.
+    if (absolute != null && streams.length < 5) {
+      const packs = await withTimeout(
+        findPackStreams(meta.name, absolute),
+        STREAM_SEARCH_BUDGET_MS,
+        'pack resolve',
+      ).catch(() => []);
+      for (const p of packs) {
+        if (cachedHashes.has(p.infohash)) continue;
+        const c = {
+          infohash: p.infohash,
+          fileIdx: p.fileIdx,
+          name: p.name,
+          quality: p.quality,
+          seeders: p.seeders,
+          sizeText: humanBytes(p.size),
+          provider: 'pack',
+        };
+        rememberMagnet(p.infohash, {
+          magnet: `magnet:?xt=urn:btih:${p.infohash}`,
+          name: p.name,
+          quality: p.quality,
+          poster: meta.poster || null,
+          imdb,
+          season,
+          episode,
+        });
+        streams.push(searchStream(c, cleanReleaseName(p.name) || p.name));
+      }
     }
   } catch (err) {
     console.error('stream search error:', err.message);
