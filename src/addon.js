@@ -34,7 +34,7 @@ function dedupeBySize(ranked, tolerance = 0.02) {
 }
 import { resolveImdb, searchQueries } from './cinemeta.js';
 import { resolveKitsu } from './kitsu.js';
-import { absoluteFromImdb } from './anilist.js';
+import { absoluteFromImdb, isAnime } from './anilist.js';
 import { absoluteEpisode } from './tvdb.js';
 import { searchTorrents } from './search.js';
 
@@ -343,17 +343,25 @@ addonRouter.get('/stream/:type/:id.json', async (req, res) => {
       // back to TheTVDB only if AniList can't resolve it AND a key is configured.
       // Non-anime shows resolve to null and behave exactly as before.
       if (season != null && episode != null) {
+        // 1) AniList air-date match — key-less, exact, great for ongoing anime.
         absolute = await withTimeout(
           absoluteFromImdb(imdb, meta.episodeReleased),
           STREAM_SEARCH_BUDGET_MS,
           'AniList absolute',
         ).catch(() => null);
+        // 2) TheTVDB — exact, but needs an (optional) key.
         if (absolute == null && config.tvdb.enabled) {
           absolute = await withTimeout(
             absoluteEpisode(meta.episodeTvdbId),
             STREAM_SEARCH_BUDGET_MS,
             'TheTVDB absolute',
           ).catch(() => null);
+        }
+        // 3) Cinemeta episode-count — key-less last resort for anime whose
+        // air-date data is gone (completed shows). Anime-gated so it never adds
+        // spurious absolute queries to normal TV.
+        if (absolute == null && meta.episodeOrdinal != null && (await isAnime(imdb))) {
+          absolute = meta.episodeOrdinal;
         }
       }
     } else {

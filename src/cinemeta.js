@@ -57,14 +57,30 @@ export async function resolveImdb(type, rawId) {
   const s = season ? Number(season) : null;
   const e = episode ? Number(episode) : null;
   const ep = s != null && e != null ? base.episodes?.[`${s}:${e}`] : null;
+  // Count-based absolute = episodes in prior seasons + this one. Cheap, key-less
+  // fallback for anime whose air-date/keyed lookups fail (e.g. completed shows
+  // AniList no longer schedules — Dragon Ball Super). Approximate (can drift for
+  // shows with recaps/specials), so addon.js uses it only as a last resort and
+  // only for anime.
+  let episodeOrdinal = null;
+  if (s != null && e != null) {
+    let prior = 0;
+    for (const k of Object.keys(base.episodes)) {
+      const vs = Number(k.split(':')[0]);
+      if (vs >= 1 && vs < s) prior += 1;
+    }
+    episodeOrdinal = prior + e;
+  }
   return {
     ...base,
     season: s,
     episode: e,
     // Per-episode hooks addon.js turns into an absolute number for anime search:
-    // the air date (AniList, key-less) and the TheTVDB episode id (optional).
+    // the air date (AniList, key-less), the TheTVDB episode id (optional), and a
+    // count-based ordinal (key-less last-resort).
     episodeReleased: ep?.released ?? null,
     episodeTvdbId: ep?.tvdbId ?? null,
+    episodeOrdinal,
   };
 }
 

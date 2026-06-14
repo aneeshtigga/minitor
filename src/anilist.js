@@ -59,6 +59,18 @@ async function loadMap() {
   return imdbMap;
 }
 
+/** Is this IMDb id a known anime (present in the AniList mapping)? Used to gate
+ *  the count-based absolute fallback so it never touches normal TV. */
+export async function isAnime(imdb) {
+  if (!imdb) return false;
+  try {
+    const map = await loadMap();
+    return Boolean(map[imdb]);
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Absolute episode number for an IMDb series episode, given that episode's
  * Cinemeta air date (ISO string). Returns null when it can't be resolved
