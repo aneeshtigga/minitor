@@ -62,25 +62,26 @@ export async function resolveImdb(type, rawId) {
   // AniList no longer schedules — Dragon Ball Super). Approximate (can drift for
   // shows with recaps/specials), so addon.js uses it only as a last resort and
   // only for anime.
-  let episodeOrdinal = null;
-  if (s != null && e != null) {
-    let prior = 0;
-    for (const k of Object.keys(base.episodes)) {
-      const vs = Number(k.split(':')[0]);
-      if (vs >= 1 && vs < s) prior += 1;
-    }
-    episodeOrdinal = prior + e;
+  let prior = 0;
+  let episodeCount = 0; // total non-special episodes (for count-alignment checks)
+  for (const k of Object.keys(base.episodes)) {
+    const vs = Number(k.split(':')[0]);
+    if (vs >= 1) episodeCount += 1;
+    if (s != null && vs >= 1 && vs < s) prior += 1;
   }
+  const episodeOrdinal = s != null && e != null ? prior + e : null;
   return {
     ...base,
     season: s,
     episode: e,
     // Per-episode hooks addon.js turns into an absolute number for anime search:
     // the air date (AniList, key-less), the TheTVDB episode id (optional), and a
-    // count-based ordinal (key-less last-resort).
+    // count-based ordinal (key-less last-resort, trusted only when episodeCount
+    // matches the anime DB's total — see addon.js).
     episodeReleased: ep?.released ?? null,
     episodeTvdbId: ep?.tvdbId ?? null,
     episodeOrdinal,
+    episodeCount,
   };
 }
 
@@ -98,17 +99,23 @@ function appendAbsolute(qs, meta) {
 /**
  * Build search query strings to try, best-first.
  * Movies: "Title Year", then "Title".
- * Series with S/E: "Title SxxEyy", "Title NxEE", then the absolute variants
- *   LAST (so normal TV still resolves on the SxxEyy query first).
+ * Series with S/E: when an absolute number is known (anime), the "Title <abs>"
+ *   variants go FIRST, then SxxEyy/NxEE as fallback. This matters: the search
+ *   stops at the first query that yields title-relevant rows, and a bare
+ *   "Title SxxEyy" query often returns broad/unrelated hits (e.g. the
+ *   live-action "One Piece S02E01") that would be committed to and then filtered
+ *   out — starving the absolute query that actually finds the episode. With no
+ *   absolute number, it's just SxxEyy/NxEE (normal TV, unchanged).
  * Series with only an absolute number (e.g. a Kitsu anime id kitsu:12:1164):
  *   just the "Title <abs>" variants — there is no SxxEyy to try.
  */
 export function searchQueries(meta) {
   if (!meta.name) return []; // no title -> can't build a meaningful torrent query
   if (meta.type === 'series' && meta.season != null && meta.episode != null) {
+    const qs = [];
+    appendAbsolute(qs, meta); // anime: absolute number first (best signal)
     const se = `S${String(meta.season).padStart(2, '0')}E${String(meta.episode).padStart(2, '0')}`;
-    const qs = [`${meta.name} ${se}`, `${meta.name} ${meta.season}x${String(meta.episode).padStart(2, '0')}`];
-    appendAbsolute(qs, meta);
+    qs.push(`${meta.name} ${se}`, `${meta.name} ${meta.season}x${String(meta.episode).padStart(2, '0')}`);
     return qs;
   }
   if (meta.type === 'series' && meta.absolute != null) {
