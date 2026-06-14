@@ -34,7 +34,7 @@ function dedupeBySize(ranked, tolerance = 0.02) {
 }
 import { resolveImdb, searchQueries } from './cinemeta.js';
 import { resolveKitsu } from './kitsu.js';
-import { absoluteFromImdb, isAnime } from './anilist.js';
+import { absoluteFromImdb, isAnime, animeEpisodeCount } from './anilist.js';
 import { absoluteEpisode } from './tvdb.js';
 import { searchTorrents } from './search.js';
 
@@ -80,7 +80,7 @@ const CATALOG_ID = 'minitor-cache';
 const CACHE_MODE = config.streamMode === 'cache';
 const MANIFEST = {
   id: CACHE_MODE ? 'org.minitor.cache' : 'org.minitor.direct',
-  version: '0.6.2',
+  version: '0.6.3',
   name: CACHE_MODE ? 'Minitor (cache)' : 'Minitor',
   description: CACHE_MODE
     ? 'Searches torrents (Jackett/Torznab), downloads them to your local qBittorrent, and streams the local file with seeking.'
@@ -358,10 +358,14 @@ addonRouter.get('/stream/:type/:id.json', async (req, res) => {
           ).catch(() => null);
         }
         // 3) Cinemeta episode-count — key-less last resort for anime whose
-        // air-date data is gone (completed shows). Anime-gated so it never adds
-        // spurious absolute queries to normal TV.
+        // air-date data is gone (e.g. completed shows). Anime-gated, and trusted
+        // only when Cinemeta's episode total matches the anime DB's: finite &
+        // equal means the numbering lines up (count is exact); a null total
+        // (ongoing, e.g. One Piece) means the count can drift, so we skip it
+        // rather than risk an off-by-one wrong episode.
         if (absolute == null && meta.episodeOrdinal != null && (await isAnime(imdb))) {
-          absolute = meta.episodeOrdinal;
+          const total = await animeEpisodeCount(imdb);
+          if (total != null && total === meta.episodeCount) absolute = meta.episodeOrdinal;
         }
       }
     } else {

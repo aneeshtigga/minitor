@@ -71,6 +71,37 @@ export async function isAnime(imdb) {
   }
 }
 
+const epCountCache = new Map(); // imdb -> AniList total episode count | null
+
+/** AniList's total episode count for an anime (null if unknown/ongoing). Lets
+ *  the count-based absolute fallback verify Cinemeta's numbering aligns with the
+ *  anime DB before trusting it — finite & equal => safe (e.g. completed shows);
+ *  null (ongoing, e.g. One Piece) => don't trust the count, which can drift. */
+export async function animeEpisodeCount(imdb) {
+  if (!imdb) return null;
+  if (epCountCache.has(imdb)) return epCountCache.get(imdb);
+  let val = null;
+  try {
+    const map = await loadMap();
+    const id = map[imdb];
+    if (id) {
+      const res = await fetch(GRAPHQL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+        body: JSON.stringify({ query: 'query($m:Int){Media(id:$m){episodes}}', variables: { m: id } }),
+      });
+      if (res.ok) {
+        const n = (await res.json())?.data?.Media?.episodes;
+        if (Number.isFinite(n) && n > 0) val = n;
+      }
+    }
+  } catch {
+    /* leave null */
+  }
+  epCountCache.set(imdb, val);
+  return val;
+}
+
 /**
  * Absolute episode number for an IMDb series episode, given that episode's
  * Cinemeta air date (ISO string). Returns null when it can't be resolved
