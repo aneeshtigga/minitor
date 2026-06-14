@@ -194,7 +194,28 @@ export function matchesAbsolute(name = '', abs) {
     .replace(/\b[xh]\.?26[45]\b/gi, ' ') // x264 h265
     .replace(/\b\d{1,2}[\s.]?bit\b/gi, ' ') // 10bit
     .replace(/[([]\s*\d{4}\s*[)\]]/g, ' '); // (2024) [2024]
-  return new RegExp(`(?<![\\d.])0*${abs}(?![\\d.])`).test(cleaned);
+  // Left boundary excludes a preceding digit OR '.' (so "5.1" doesn't match 1,
+  // "1486" doesn't match 486). Right boundary excludes only a following digit —
+  // NOT '.', so a filename like "One Piece - 486.mkv" still matches.
+  return new RegExp(`(?<![\\d.])0*${abs}(?!\\d)`).test(cleaned);
+}
+
+/**
+ * Does a release name look like a batch/range PACK that plausibly contains
+ * absolute episode `abs`? Matches an explicit range (001-837, 0001~1000,
+ * E01-E131), or a Complete/Batch marker (treated as covering — verified later
+ * against the actual file list). Single-episode names ("One Piece - 1086") have
+ * no second number after the dash, so they don't match.
+ */
+export function packCovers(name = '', abs) {
+  if (!abs) return false;
+  const m = /(?<![\d.])0*(\d{1,4})\s*[-~]\s*0*(\d{1,4})(?![\d.])/.exec(name);
+  if (m) {
+    const a = Number(m[1]);
+    const b = Number(m[2]);
+    return b > a && abs >= a && abs <= b;
+  }
+  return /\b(complete|batch|all\s*episodes|full\s*series)\b/i.test(name);
 }
 
 /**

@@ -83,6 +83,11 @@ export const config = {
     enabled: Boolean(process.env.TVDB_API_KEY),
   },
 
+  // Stremio's own streaming server (the torrent engine on :11470). We ask it to
+  // fetch a pack's metadata + file list so we can resolve which file is the
+  // requested episode (packs.js). Same machine as the addon; configurable.
+  stremioServer: clean(process.env.STREMIO_SERVER_URL || 'http://127.0.0.1:11470'),
+
   downloadDir: DOWNLOAD_DIR,
 
   // local JSON "database" for the cache index
