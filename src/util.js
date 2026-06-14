@@ -188,6 +188,7 @@ export function parseSeasonEpisode(name = '') {
 export function matchesAbsolute(name = '', abs) {
   if (!abs) return false;
   const cleaned = name
+    .replace(/[[(][0-9a-f]{8}[\])]/gi, ' ') // CRC32 hash, e.g. [6D486DE2] — digits here are NOT an episode no.
     .replace(/\b\d{3,4}[pi]\b/gi, ' ') // 1080p 720p 2160p
     .replace(/\b\d{3,4}x\d{3,4}\b/gi, ' ') // 1920x1080
     .replace(/\b[xh]\.?26[45]\b/gi, ' ') // x264 h265
