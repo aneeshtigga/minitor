@@ -52,14 +52,29 @@ fn windows_tray_icon_bytes() -> &'static [u8] {
     }
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Default)]
 struct Status {
     running: bool,
     mode: String,
+    /// Port the active instance is on (may differ from the default if we
+    /// relocated past a foreign occupant).
+    port: u16,
+    /// The default port is held by a NON-minitor process — the UI offers a
+    /// "Start on a free port" action instead of fighting over it.
+    port_conflict: bool,
     public_url: String,
     addon_url: String,
     qbittorrent_url: String,
     jackett_url: String,
+}
+
+/// Outcome of a start request, so the UI knows whether we spawned, adopted an
+/// already-running instance, or hit a foreign occupant on the default port.
+#[derive(Serialize)]
+struct StartResult {
+    /// "started" | "adopted" | "port_busy"
+    status: String,
+    port: u16,
 }
 
 #[tauri::command]
@@ -115,33 +130,85 @@ async fn jackett_running() -> bool {
         .unwrap_or(false)
 }
 
-/// Start the sidecar in `mode` and show the tray. Shared by the UI command and
-/// the launch auto-start.
-fn launch_service(app: &AppHandle, mode: &str) -> Result<(), String> {
+/// Start the sidecar in `mode` on `port` and show the tray. Shared by the UI
+/// command and the launch auto-start.
+fn launch_service(app: &AppHandle, mode: &str, port: u16) -> Result<(), String> {
     // Jackett needs to be up for search; nudge its service (no-op if not installed).
     deps::start_jackett_service();
-    server::start(app, mode)?;
+    server::start(app, mode, port)?;
     show_tray(app); // menu-bar presence while the service runs
     Ok(())
 }
 
 #[tauri::command]
-fn start_server(app: AppHandle, mode: String) -> Result<(), String> {
-    launch_service(&app, &mode)
+fn start_server(app: AppHandle, mode: String) -> Result<StartResult, String> {
+    // A start while we already own the child is a restart / mode-switch — just
+    // respawn on the same port; don't re-probe and "adopt" our own instance.
+    if server::owns_child(&app) {
+        let port = server::active_port(&app);
+        launch_service(&app, &mode, port)?;
+        return Ok(StartResult { status: "started".into(), port });
+    }
+    let port = server::DEFAULT_PORT;
+    match server::probe_port(port) {
+        // Something is already serving minitor here — adopt it, don't duplicate.
+        server::PortState::Minitor(m) => {
+            server::adopt(&app, port, &m);
+            show_tray(&app);
+            Ok(StartResult { status: "adopted".into(), port })
+        }
+        server::PortState::Free => {
+            launch_service(&app, &mode, port)?;
+            Ok(StartResult { status: "started".into(), port })
+        }
+        // Held by another app — don't kill it; let the UI offer a free port.
+        server::PortState::Foreign => Ok(StartResult { status: "port_busy".into(), port }),
+    }
+}
+
+/// "Start on a free port" — relocate past a foreign occupant of the default port.
+#[tauri::command]
+fn start_server_free_port(app: AppHandle, mode: String) -> Result<StartResult, String> {
+    let port = server::find_free_port()
+        .ok_or_else(|| "No free port available in range".to_string())?;
+    launch_service(&app, &mode, port)?;
+    Ok(StartResult { status: "started".into(), port })
 }
 
 #[tauri::command]
 fn stop_server(app: AppHandle) {
-    server::stop(&app);
+    server::stop(&app); // graceful kill of the child we spawned, if any
+    // An adopted instance has no child handle — reclaim the port by killing
+    // whatever minitor is listening on it. (Only here, only on explicit Stop.)
+    let port = server::active_port(&app);
+    if let server::PortState::Minitor(_) = server::probe_port(port) {
+        deps::kill_port_listener(port);
+    }
+    server::reset_port(&app);
     hide_tray(&app);
 }
 
+// status probes the port (network I/O), so it runs off the UI thread.
 #[tauri::command]
-fn status(app: AppHandle) -> Status {
-    let public = server::public_url();
+async fn status(app: AppHandle) -> Status {
+    tauri::async_runtime::spawn_blocking(move || compute_status(&app))
+        .await
+        .unwrap_or_default()
+}
+
+fn compute_status(app: &AppHandle) -> Status {
+    let port = server::active_port(app);
+    let (running, mode, port_conflict) = match server::probe_port(port) {
+        server::PortState::Minitor(m) => (true, m, false),
+        server::PortState::Foreign => (false, server::launched_mode(app), true),
+        server::PortState::Free => (false, server::launched_mode(app), false),
+    };
+    let public = server::public_url(port);
     Status {
-        running: server::is_running(&app),
-        mode: server::current_mode(&app),
+        running,
+        mode,
+        port,
+        port_conflict,
         addon_url: format!("{public}/manifest.json"),
         public_url: public.clone(),
         qbittorrent_url: "http://127.0.0.1:8080".to_string(),
@@ -180,7 +247,8 @@ fn show_tray(app: &AppHandle) {
         .on_menu_event(|app, event| match event.id.as_ref() {
             "open" => show_main_window(app),
             "open_minitor" => {
-                let _ = app.opener().open_url(format!("{}/", server::public_url()), None::<&str>);
+                let port = server::active_port(app);
+                let _ = app.opener().open_url(format!("{}/", server::public_url(port)), None::<&str>);
             }
             "open_qbit" => {
                 let _ = app.opener().open_url("http://127.0.0.1:8080", None::<&str>);
@@ -267,13 +335,29 @@ pub fn run() {
                 let jackett = tauri::async_runtime::spawn_blocking(|| deps::check().jackett)
                     .await
                     .unwrap_or(false);
-                if jackett {
-                    // Tray creation + sidecar spawn back on the main thread.
-                    let h = handle.clone();
-                    let _ = handle.run_on_main_thread(move || {
-                        let _ = launch_service(&h, "direct");
-                    });
+                if !jackett {
+                    return;
                 }
+                // What's on the default port? (Probe off the main thread — it does
+                // network I/O with timeouts.) Adopt an already-running minitor,
+                // start fresh if the port's free, and stand down (no kill) if a
+                // foreign app holds it — the UI will surface the conflict + offer.
+                let pstate = tauri::async_runtime::spawn_blocking(|| {
+                    server::probe_port(server::DEFAULT_PORT)
+                })
+                .await
+                .unwrap_or(server::PortState::Free);
+                let h = handle.clone();
+                let _ = handle.run_on_main_thread(move || match pstate {
+                    server::PortState::Minitor(m) => {
+                        server::adopt(&h, server::DEFAULT_PORT, &m);
+                        show_tray(&h);
+                    }
+                    server::PortState::Free => {
+                        let _ = launch_service(&h, "direct", server::DEFAULT_PORT);
+                    }
+                    server::PortState::Foreign => {}
+                });
             });
             Ok(())
         })
@@ -286,6 +370,7 @@ pub fn run() {
             download_url,
             jackett_running,
             start_server,
+            start_server_free_port,
             stop_server,
             status
         ])

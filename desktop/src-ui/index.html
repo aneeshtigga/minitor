@@ -117,6 +117,11 @@
       <button id="btn-start">Start</button>
       <button class="danger" id="btn-stop" style="display:none">Stop</button>
     </div>
+    <div class="hint" id="port-conflict" style="display:none">
+      Port <b id="conflict-port">11472</b> is in use by another app — minitor isn’t
+      running there.
+      <button class="ghost" id="btn-free-port" style="margin-top:8px;padding:5px 12px;font-size:12px">Start on a free port</button>
+    </div>
     <div id="links" style="display:none">
       <div class="link">
         <span class="label">Addon URL</span>
@@ -277,6 +282,19 @@
     $('btn-start').style.display = running ? 'none' : '';
     $('btn-stop').style.display = running ? '' : 'none';
     $('links').style.display = running ? '' : 'none';
+    $('port-conflict').style.display = 'none';
+  }
+  // The default port is held by some other app (not minitor). Offer to relocate
+  // instead of fighting over it.
+  function renderConflict(port) {
+    if (switching) return renderSwitching();
+    $('dot-run').classList.remove('ok');
+    $('run-text').textContent = 'Port ' + port + ' in use';
+    $('btn-start').style.display = 'none';
+    $('btn-stop').style.display = 'none';
+    $('links').style.display = 'none';
+    $('conflict-port').textContent = port;
+    $('port-conflict').style.display = '';
   }
 
   async function refreshStatus() {
@@ -290,12 +308,17 @@
     if (s.running) {
       selectedMode = s.mode;
       // keep the mode toggle in sync with what's actually running (e.g. the
-      // service auto-started in direct mode on launch).
+      // service auto-started in direct mode on launch, or we adopted a running
+      // instance).
       $('mode-direct').classList.toggle('active', s.mode === 'direct');
       $('mode-cache').classList.toggle('active', s.mode === 'cache');
       $('cache-hint').style.display = s.mode === 'cache' ? '' : 'none';
+      renderRunning(true);
+    } else if (s.port_conflict) {
+      renderConflict(s.port);
+    } else {
+      renderRunning(false);
     }
-    renderRunning(s.running);
     $('url-addon').textContent = s.addon_url;
     $('url-minitor').textContent = s.public_url;
     $('url-qbit').textContent = s.qbittorrent_url;
@@ -305,11 +328,32 @@
   async function startServer() {
     $('btn-start').disabled = true; $('btn-start').textContent = 'Starting…';
     try {
-      await invoke('start_server', { mode: selectedMode });
+      const r = await invoke('start_server', { mode: selectedMode });
+      if (r.status !== 'started') switching = false;   // adopt/busy resolve now
+      if (r.status === 'port_busy') {
+        renderConflict(r.port);
+      } else if (r.status === 'adopted') {
+        toast('Minitor already running — adopted it');
+        refreshStatus();
+      }
+      // 'started' → the server-ready event (or next poll) flips us to Running.
     } catch (e) {
       toast('Failed to start'); console.error(e);
     } finally {
       $('btn-start').disabled = false; $('btn-start').textContent = 'Start';
+    }
+  }
+
+  async function startFreePort() {
+    const btn = $('btn-free-port');
+    btn.disabled = true; btn.innerHTML = '<span class="spinner"></span> Starting…';
+    try {
+      await invoke('start_server_free_port', { mode: selectedMode });
+      refreshStatus();   // pick up the new port + its URLs
+    } catch (e) {
+      toast('No free port available'); console.error(e);
+    } finally {
+      btn.disabled = false; btn.textContent = 'Start on a free port';
     }
   }
 
@@ -320,6 +364,7 @@
 
   $('btn-start').onclick = startServer;
   $('btn-stop').onclick = stopServer;
+  $('btn-free-port').onclick = startFreePort;
 
   // ---- launch at login ----
   invoke('autostart_enabled').then((on) => { $('autostart').checked = !!on; }).catch(() => {});

@@ -307,6 +307,18 @@ mod platform {
         Ok(format!("Jackett installed to {dir}"))
     }
 
+    pub fn kill_port_listener(port: u16) {
+        let Ok(out) = command("lsof")
+            .args(["-ti", &format!("tcp:{port}"), "-sTCP:LISTEN"])
+            .output()
+        else {
+            return;
+        };
+        for pid in String::from_utf8_lossy(&out.stdout).split_whitespace() {
+            let _ = command("kill").arg("-9").arg(pid).output();
+        }
+    }
+
     pub fn start_jackett_service() {
         // Prefer the brew-managed service if brew-installed; otherwise run the
         // directly-downloaded binary.
@@ -439,6 +451,29 @@ mod platform {
         }
     }
 
+    pub fn kill_port_listener(port: u16) {
+        // `netstat -ano` rows are: Proto  Local  Foreign  State  PID. Find
+        // LISTENING rows whose local address ends in :port and taskkill the PID.
+        let Ok(out) = command("netstat").args(["-ano", "-p", "tcp"]).output() else {
+            return;
+        };
+        let text = String::from_utf8_lossy(&out.stdout);
+        let needle = format!(":{port}");
+        for line in text.lines() {
+            if !line.contains("LISTENING") {
+                continue;
+            }
+            let cols: Vec<&str> = line.split_whitespace().collect();
+            // [proto, local, foreign, state, pid]; match the exact local port so
+            // ":11472" doesn't also catch ":114720".
+            if cols.len() < 5 || !cols[1].ends_with(needle.as_str()) {
+                continue;
+            }
+            let pid = cols[cols.len() - 1];
+            let _ = command("taskkill").args(["/PID", pid, "/F"]).output();
+        }
+    }
+
     fn process_running(image: &str) -> bool {
         command("tasklist")
             .args(["/FI", &format!("IMAGENAME eq {image}"), "/NH"])
@@ -562,6 +597,18 @@ mod platform {
         Ok(format!("Jackett installed to {dir}"))
     }
 
+    pub fn kill_port_listener(port: u16) {
+        let Ok(out) = command("lsof")
+            .args(["-ti", &format!("tcp:{port}"), "-sTCP:LISTEN"])
+            .output()
+        else {
+            return;
+        };
+        for pid in String::from_utf8_lossy(&out.stdout).split_whitespace() {
+            let _ = command("kill").arg("-9").arg(pid).output();
+        }
+    }
+
     pub fn start_jackett_service() {
         // Try a systemd user service first (covers distro packages).
         let via_systemd = command("systemctl")
@@ -622,6 +669,14 @@ pub fn install(name: &str) -> Result<String, String> {
 /// Ensure Jackett's background service is running (idempotent, best-effort).
 pub fn start_jackett_service() {
     platform::start_jackett_service();
+}
+
+/// Kill whatever process is LISTENING on `port` (best-effort). Used ONLY on an
+/// explicit user Stop of an instance we didn't spawn ("adopted") to reclaim the
+/// port — never automatically, and never against a port we haven't already
+/// confirmed is serving minitor.
+pub fn kill_port_listener(port: u16) {
+    platform::kill_port_listener(port);
 }
 
 /// Official download page for a dependency (UI fallback when no pkg manager).
