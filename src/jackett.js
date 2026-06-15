@@ -1,6 +1,10 @@
 import { config } from './config.js';
 import { infohashFromMagnet } from './util.js';
-import { configuredIndexerIds } from './jackett-setup.js';
+import { configuredIndexerIds, DEFAULT_INDEXERS, ANIME_INDEXERS } from './jackett-setup.js';
+
+// Static fan-out when cookie dance fails (admin password): union of defaults + anime.
+// Not-actually-configured ids just 404/empty fast. Avoids slow `all` aggregate.
+const FALLBACK_FANOUT_IDS = [...new Set([...DEFAULT_INDEXERS, ...ANIME_INDEXERS])];
 
 /**
  * Jackett search via its Torznab API.
@@ -131,10 +135,12 @@ export async function searchJackett(query) {
   if (!config.jackett.enabled) return { rows: [], pending: null };
 
   // Per-indexer fan-out needs the configured-indexer list (dashboard API).
-  // If that's unavailable (admin password set), fall back to the aggregate.
-  const ids = await configuredIndexerIds().catch(() => null);
+  // If unavailable (admin password set), use a static fan-out over DEFAULT_INDEXERS
+  // + ANIME_INDEXERS instead of falling straight to the slow `all` aggregate.
+  // Not-actually-configured ids just 404/empty fast — no harm.
+  let ids = await configuredIndexerIds().catch(() => null);
   if (!ids || !ids.length) {
-    return { rows: await searchIndexer('all', query), pending: null };
+    ids = FALLBACK_FANOUT_IDS;
   }
 
   const collected = [];
@@ -170,8 +176,14 @@ export async function searchJackett(query) {
   }
 
   returned = true; // stragglers from here on land in lateRows
+  const rows = [...collected];
+  // Last resort: if the static fan-out yielded nothing (rare — either no indexers
+  // configured at all, or they're all down), try the slow `all` aggregate.
+  if (!rows.length && ids === FALLBACK_FANOUT_IDS) {
+    return { rows: await searchIndexer('all', query), pending: null };
+  }
   return {
-    rows: [...collected],
+    rows,
     pending: allDoneFlag ? null : allDone.then(() => lateRows),
   };
 }

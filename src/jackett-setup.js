@@ -36,8 +36,13 @@ export function readApiKeyFromDisk() {
       const raw = fs.readFileSync(p, 'utf8');
       const key = JSON.parse(raw).APIKey;
       if (key) return key;
-    } catch {
-      /* not at this path / not readable yet */
+    } catch (err) {
+      // Windows-specific: %ProgramData% config read can hit EACCES/EPERM from a
+      // non-elevated sidecar (machine-wide install). Log actionable diagnostic.
+      if (err.code === 'EACCES' || err.code === 'EPERM') {
+        console.warn(`  ⚠ Jackett config at ${p} exists but isn't readable (permission issue) — set JACKETT_API_KEY env or run elevated`);
+      }
+      /* otherwise not at this path / not valid yet */
     }
   }
   return null;
@@ -108,10 +113,20 @@ const DEFAULT_INDEXERS = [
   'eztv',
   'therarbg',
   'nyaasi',
+  'animetosho',
+  'tokyotoshokan',
+  'anidex',
   'kickasstorrents-ws',
   'limetorrents',
   'torrentdownloads',
 ];
+
+// Anime indexers reconciled even into existing setups (not just fresh ones).
+// AnimeTosho = highest value (batch packs + absolute-numbered singles nyaa misses).
+const ANIME_INDEXERS = ['nyaasi', 'animetosho', 'tokyotoshokan', 'anidex'];
+
+// Exported for the static fan-out fallback in jackett.js.
+export { DEFAULT_INDEXERS, ANIME_INDEXERS };
 
 /**
  * Jackett's dashboard API (/api/v2.0/indexers…) is SESSION-cookie authed — the
@@ -218,6 +233,27 @@ async function addDefaultIndexers(cookie) {
   );
 }
 
+/** Reconcile missing anime indexers into existing setups. Diff against configured,
+ *  add only the missing ones. Idempotent (re-adding harmless). Never removes user's
+ *  general indexers. */
+async function ensureAnimeIndexers(cookie, configuredList) {
+  const existing = new Set(configuredList.map((i) => i.id).filter(Boolean));
+  const missing = ANIME_INDEXERS.filter((id) => !existing.has(id));
+  if (!missing.length) return;
+  console.log(`  Reconciling anime indexers: ${missing.join(', ')}…`);
+  const added = [];
+  for (const id of missing) {
+    if (await addIndexer(id, cookie)) added.push(id);
+  }
+  if (added.length) {
+    console.log(`  ✓ Added anime indexers: ${added.join(', ')}`);
+    // Invalidate the ids cache so the new indexers are included in the per-indexer
+    // fan-out immediately (otherwise we'd wait up to IDS_TTL_MS = 10 minutes).
+    idsCache = { at: 0, ids: null };
+    configuredIndexerIds().catch(() => {}); // warm the cache with the new list
+  }
+}
+
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const BOOTSTRAP_RETRY_MS = 2_000;
 const BOOTSTRAP_MAX_MS = 90_000;
@@ -256,9 +292,16 @@ export async function bootstrapJackett() {
           return;
         }
         const list = await fetchConfiguredIndexers(cookie);
-        if (list == null) console.log('  ⚠ Could not query Jackett indexers — add some in the Jackett UI if search comes up empty');
-        else if (list.length > 0) console.log(`  ✓ Jackett has ${list.length} indexer(s) configured`);
-        else await addDefaultIndexers(cookie).catch(() => {});
+        if (list == null) {
+          console.log('  ⚠ Could not query Jackett indexers — add some in the Jackett UI if search comes up empty');
+        } else if (list.length > 0) {
+          console.log(`  ✓ Jackett has ${list.length} indexer(s) configured`);
+          // Reconcile missing anime indexers into existing setups (user decision:
+          // auto-add to ALL setups, not just fresh ones).
+          await ensureAnimeIndexers(cookie, list).catch(() => {});
+        } else {
+          await addDefaultIndexers(cookie).catch(() => {});
+        }
         // Warm the per-search indexer-id cache so the first search doesn't
         // pay the cookie handshake.
         configuredIndexerIds().catch(() => {});

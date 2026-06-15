@@ -11,3 +11,11 @@ desktop/src-tauri/target/
 desktop/src-tauri/binaries/
 desktop/src-tauri/gen/
 
+# IDE / agent tools
+.agents/
+.continue/
+skills-lock.json
+
+# temp / dev docs
+ANIME_FIX_PLAN.md
+

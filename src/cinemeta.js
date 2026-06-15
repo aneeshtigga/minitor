@@ -64,11 +64,23 @@ export async function resolveImdb(type, rawId) {
   // only for anime.
   let prior = 0;
   let episodeCount = 0; // total non-special episodes (for count-alignment checks)
+  let seasonMin = Infinity;
+  let seasonMax = 0;
+  let hasSpecials = false;
+  const seasons = new Set();
   for (const k of Object.keys(base.episodes)) {
     const vs = Number(k.split(':')[0]);
-    if (vs >= 1) episodeCount += 1;
-    if (s != null && vs >= 1 && vs < s) prior += 1;
+    if (vs === 0) hasSpecials = true;
+    if (vs >= 1) {
+      episodeCount += 1;
+      seasonMin = Math.min(seasonMin, vs);
+      seasonMax = Math.max(seasonMax, vs);
+      seasons.add(vs);
+      if (s != null && vs < s) prior += 1;
+    }
   }
+  if (seasonMin === Infinity) seasonMin = 0; // no numbered seasons at all
+  const seasonsContiguous = seasonMax > 0 && seasons.size === seasonMax - seasonMin + 1;
   const episodeOrdinal = s != null && e != null ? prior + e : null;
   return {
     ...base,
@@ -82,15 +94,32 @@ export async function resolveImdb(type, rawId) {
     episodeTvdbId: ep?.tvdbId ?? null,
     episodeOrdinal,
     episodeCount,
+    // Season shape signals for the trustOrdinal guard (addon.js): when the show
+    // is presented as a single flat season (seasonMax === 1), episodeOrdinal ===
+    // episode exactly with no conversion and no off-by-one risk.
+    seasonMin,
+    seasonMax,
+    hasSpecials,
+    seasonsContiguous,
   };
 }
 
-/** Append "Title <abs>" query variants (bare + zero-padded) when an absolute
- *  episode number is known. Ongoing anime is almost always released by absolute
- *  count ("One Piece - 1164"), never SxxEyy. */
+/** Append "Title <abs>" query variants when an absolute episode number is
+ *  known. Ongoing anime is almost always released by absolute count, never
+ *  SxxEyy. Emit multiple tokenization variants real releases use, ordered after
+ *  the two best (search stops at the first query with relevant rows). */
 function appendAbsolute(qs, meta) {
   if (meta.absolute == null) return;
-  for (const a of [`${meta.absolute}`, String(meta.absolute).padStart(2, '0')]) {
+  const abs = meta.absolute;
+  // The dash form `[SubsPlease] One Piece - 1164` is extremely common — emit it
+  // first so it doesn't get de-duped by the bare form if abs is short.
+  for (const a of [
+    `${abs}`, // bare: "One Piece 1164"
+    String(abs).padStart(2, '0'), // 2-digit pad: "One Piece 07" (episodes <10)
+    `- ${abs}`, // dash: "One Piece - 1164" (the most common tokenization)
+    String(abs).padStart(3, '0'), // 3-digit pad: "One Piece 486" (some shows pad to 3)
+    `E${abs}`, // E-prefix: "One Piece E1164" (fansub variant)
+  ]) {
     const q = `${meta.name} ${a}`;
     if (!qs.includes(q)) qs.push(q);
   }

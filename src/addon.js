@@ -32,9 +32,57 @@ function dedupeBySize(ranked, tolerance = 0.02) {
   }
   return kept;
 }
+
+/**
+ * Decide whether to trust the count-based episodeOrdinal (prior seasons + episode)
+ * as the absolute episode number. Returns { absolute, certain }.
+ *
+ * Trust when ANY holds:
+ *  1. Single-season presentation (seasonMax === 1): episodeOrdinal === episode
+ *     exactly, no conversion, no off-by-one risk. certain: true.
+ *  2. Exact total match (anilist.episodes finite === episodeCount): numbering
+ *     lines up end-to-end. certain: true. (Existing rule — keep it.)
+ *  3. Ongoing contiguous prefix (status RELEASING, no specials, contiguous seasons,
+ *     ordinal <= count): best-effort for ongoing multi-season anime (One Piece).
+ *     certain: false (LABELED so the user knows the match is approximate).
+ *
+ * Rule 3 carries a small wrong-episode risk (a recap/special interleaved into a
+ * numbered season miscounts by one) — guarded by !hasSpecials + seasonsContiguous.
+ * Document: this rule trades correctness for coverage; first to disable if a user
+ * reports a mismatch. Rules 1 & 2 are mathematically safe.
+ *
+ * If none hold -> { absolute: null, certain: true } (falls through to no-pack).
+ */
+function trustOrdinal({ season, episode, episodeOrdinal, episodeCount, seasonMax, hasSpecials, seasonsContiguous, anilist }) {
+  if (episodeOrdinal == null) return { absolute: null, certain: true };
+
+  // Rule 1: single-season (One Piece as S1 flat) — ordinal === episode, zero risk.
+  if (seasonMax === 1) return { absolute: episodeOrdinal, certain: true };
+
+  // Rule 2: exact total match — numbering lines up.
+  if (Number.isFinite(anilist.episodes) && anilist.episodes === episodeCount) {
+    return { absolute: episodeOrdinal, certain: true };
+  }
+
+  // Rule 3: ongoing contiguous prefix (best-effort, LABELED).
+  // hasSpecials removed: season-0 specials separate from numbered seasons don't
+  // break ordinal (prior-count already excludes season 0). Only interleaved
+  // specials within numbered seasons cause off-by-one, but detecting that needs
+  // per-episode scan. Accept the small risk for ongoing anime coverage.
+  if (
+    anilist.status === 'RELEASING' &&
+    seasonsContiguous &&
+    episodeOrdinal <= episodeCount
+  ) {
+    return { absolute: episodeOrdinal, certain: false };
+  }
+
+  // None hold — current safe default.
+  return { absolute: null, certain: true };
+}
 import { resolveImdb, searchQueries } from './cinemeta.js';
 import { resolveKitsu } from './kitsu.js';
-import { absoluteFromImdb, isAnime, animeEpisodeCount } from './anilist.js';
+import { absoluteFromImdb, isAnime, animeSeasonInfo } from './anilist.js';
 import { absoluteEpisode } from './tvdb.js';
 import { findPackStreams } from './packs.js';
 import { searchTorrents } from './search.js';
@@ -47,6 +95,11 @@ export const addonRouter = express.Router();
 // answer (even if just the cached streams) instead of a request that never
 // returns and ties up a worker.
 const STREAM_SEARCH_BUDGET_MS = 25_000;
+// Real sub-budgets for each resolution step so no one upstream (AniList/TVDB/
+// packs) can starve the search phase, which is where the actual streams come from.
+const ANILIST_RESOLVE_MS = 3500;
+const TVDB_RESOLVE_MS = 3500;
+const PACK_RESOLVE_MS = 8000;
 function withTimeout(promise, ms, label) {
   return Promise.race([
     promise,
@@ -200,9 +253,16 @@ function cachedStream(st) {
  *     stream.js), download it to local disk, and range-stream the local file.
  *     A permanent local copy you can re-watch instantly and serve to other
  *     devices on your LAN.
+ *
+ * `labelUncertain` — when true, the episode match is best-effort (rule 3 in
+ *   trustOrdinal), so we append a marker to the title so the user knows.
  */
-function searchStream(c, displayName) {
-  const name = displayName || cleanReleaseName(c.name) || c.name;
+function searchStream(c, displayName, labelUncertain = false) {
+  let name = displayName || cleanReleaseName(c.name) || c.name;
+  // Label uncertain matches — the absolute came from a guarded ordinal (ongoing
+  // multi-season with no air-date/keyed lookup), so the episode *might* be off
+  // by one (a recap/special interleaved). Append ≈ so the user is warned.
+  if (labelUncertain) name += ' ≈';
   // Detect from the ORIGINAL name (Cyrillic/CJK chars are language signals).
   const tags = detectTags(c.name);
   const flags = detectLanguages(c.name);
@@ -298,6 +358,7 @@ addonRouter.get('/stream/:type/:id.json', async (req, res) => {
   let season = null;
   let episode = null;
   let absolute = null; // anime absolute episode number, when known
+  let certain = true; // whether absolute came from certain source vs best-effort ordinal
   if (isImdb) {
     imdb = parts[0];
     season = parts[1] != null ? Number(parts[1]) : null;
@@ -342,33 +403,43 @@ addonRouter.get('/stream/:type/:id.json', async (req, res) => {
       meta = await withTimeout(resolveImdb(type, id), STREAM_SEARCH_BUDGET_MS, 'Cinemeta resolve');
       // Anime numbering for IMDb-catalog requests: resolve this episode's
       // absolute number (One Piece S23E09 -> 1164) so absolute-numbered torrents
-      // match. Primary source is AniList (key-less, matches by air date); falls
-      // back to TheTVDB only if AniList can't resolve it AND a key is configured.
-      // Non-anime shows resolve to null and behave exactly as before.
+      // match. Three-step cascade with real sub-budgets (so no hung upstream can
+      // starve the search phase):
+      //   1. AniList air-date (key-less, certain)
+      //   2. TheTVDB (optional key, certain)
+      //   3. trustOrdinal (safe best-effort count, labeled when uncertain)
       if (season != null && episode != null) {
         // 1) AniList air-date match — key-less, exact, great for ongoing anime.
         absolute = await withTimeout(
           absoluteFromImdb(imdb, meta.episodeReleased),
-          STREAM_SEARCH_BUDGET_MS,
+          ANILIST_RESOLVE_MS,
           'AniList absolute',
         ).catch(() => null);
         // 2) TheTVDB — exact, but needs an (optional) key.
         if (absolute == null && config.tvdb.enabled) {
           absolute = await withTimeout(
             absoluteEpisode(meta.episodeTvdbId),
-            STREAM_SEARCH_BUDGET_MS,
+            TVDB_RESOLVE_MS,
             'TheTVDB absolute',
           ).catch(() => null);
         }
-        // 3) Cinemeta episode-count — key-less last resort for anime whose
-        // air-date data is gone (e.g. completed shows). Anime-gated, and trusted
-        // only when Cinemeta's episode total matches the anime DB's: finite &
-        // equal means the numbering lines up (count is exact); a null total
-        // (ongoing, e.g. One Piece) means the count can drift, so we skip it
-        // rather than risk an off-by-one wrong episode.
-        if (absolute == null && meta.episodeOrdinal != null && (await isAnime(imdb))) {
-          const total = await animeEpisodeCount(imdb);
-          if (total != null && total === meta.episodeCount) absolute = meta.episodeOrdinal;
+        // 3) Safe best-effort count-based ordinal (guarded, anime-only). Covers
+        // ongoing multi-season anime (One Piece) and completed shows under tight
+        // safety conditions. Uncertain matches are labeled (see searchStream).
+        if (absolute == null && (await withTimeout(isAnime(imdb), ANILIST_RESOLVE_MS, 'isAnime').catch(() => false))) {
+          const anilist = await withTimeout(animeSeasonInfo(imdb), ANILIST_RESOLVE_MS, 'animeSeasonInfo').catch(() => ({ episodes: null, status: null, format: null }));
+          const result = trustOrdinal({
+            season,
+            episode,
+            episodeOrdinal: meta.episodeOrdinal,
+            episodeCount: meta.episodeCount,
+            seasonMax: meta.seasonMax,
+            hasSpecials: meta.hasSpecials,
+            seasonsContiguous: meta.seasonsContiguous,
+            anilist,
+          });
+          absolute = result.absolute;
+          certain = result.certain;
         }
       }
     } else {
@@ -434,17 +505,21 @@ addonRouter.get('/stream/:type/:id.json', async (req, res) => {
         season,
         episode,
       });
-      streams.push(searchStream(c, display));
+      streams.push(searchStream(c, display, !certain));
     }
 
     // Pack fallback: when an anime episode has few/no seeded single-episode
     // releases (typical for older/filler episodes), resolve it out of a batch
     // pack — find the episode's file inside the pack and stream just that file.
-    // Bounded, and only when direct results are thin, to avoid extra latency.
-    if (absolute != null && streams.length < 5) {
+    // Bounded, anime-only, and only when direct results are thin, to avoid extra
+    // latency. Gated on absolute != null because packs need the absolute number
+    // to pick the file; the improvements in trustOrdinal above are what unlock
+    // packs for the old-episode cohort that needed it most.
+    const anime = await withTimeout(isAnime(imdb), ANILIST_RESOLVE_MS, 'isAnime pack-gate').catch(() => false);
+    if (absolute != null && anime && streams.length < 5) {
       const packs = await withTimeout(
         findPackStreams(meta.name, absolute),
-        STREAM_SEARCH_BUDGET_MS,
+        PACK_RESOLVE_MS,
         'pack resolve',
       ).catch(() => []);
       for (const p of packs) {
@@ -467,7 +542,7 @@ addonRouter.get('/stream/:type/:id.json', async (req, res) => {
           season,
           episode,
         });
-        streams.push(searchStream(c, cleanReleaseName(p.name) || p.name));
+        streams.push(searchStream(c, cleanReleaseName(p.name) || p.name, !certain));
       }
     }
   } catch (err) {

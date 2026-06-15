@@ -193,7 +193,11 @@ export function matchesAbsolute(name = '', abs) {
     .replace(/\b\d{3,4}x\d{3,4}\b/gi, ' ') // 1920x1080
     .replace(/\b[xh]\.?26[45]\b/gi, ' ') // x264 h265
     .replace(/\b\d{1,2}[\s.]?bit\b/gi, ' ') // 10bit
-    .replace(/[([]\s*\d{4}\s*[)\]]/g, ' '); // (2024) [2024]
+    .replace(/[([]\s*\d{4}\s*[)\]]/g, ' ') // (2024) [2024]
+    .replace(/\bS\d{1,2}E\d{1,3}\b/gi, ' ') // S23E09 (SxxEyy, not absolute)
+    .replace(/\bS\d{1,2}\b/gi, ' ') // S23 S01 (season tokens standalone)
+    .replace(/\bv\d+\b/gi, ' ') // v2 v3 (release version)
+    .replace(/\b\d{1,2}'?(st|nd|rd|th)\b/gi, ' '); // 1st 2nd 3rd (ordinals)
   // Left boundary excludes a preceding digit OR '.' (so "5.1" doesn't match 1,
   // "1486" doesn't match 486). Right boundary excludes only a following digit —
   // NOT '.', so a filename like "One Piece - 486.mkv" still matches.
@@ -209,7 +213,9 @@ export function matchesAbsolute(name = '', abs) {
  */
 export function packCovers(name = '', abs) {
   if (!abs) return false;
-  const m = /(?<![\d.])0*(\d{1,4})\s*[-~]\s*0*(\d{1,4})(?![\d.])/.exec(name);
+  // Strip E-prefix before matching ranges (E01-E131 becomes 01-131).
+  const cleaned = name.replace(/\bE0*(\d)/gi, '$1');
+  const m = /(?<![\d.])0*(\d{1,4})\s*[-~]\s*0*(\d{1,4})(?![\d.])/.exec(cleaned);
   if (m) {
     const a = Number(m[1]);
     const b = Number(m[2]);

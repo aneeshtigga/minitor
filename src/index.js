@@ -8,6 +8,7 @@ import { addonRouter } from './addon.js';
 import { streamRouter } from './stream.js';
 import { apiRouter } from './api.js';
 import { bootstrapJackett } from './jackett-setup.js';
+import { loadMap } from './anilist.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -49,6 +50,11 @@ async function main() {
   // the background while Jackett finishes starting (up to 90s on first launch),
   // and search picks the key up via shared config as soon as it lands.
   bootstrapJackett().catch(() => {});
+
+  // Warm the IMDb→AniList map so the first anime click doesn't pay the Fribb
+  // download. Fire-and-forget; per-fetch timeout in anilist.js keeps it from
+  // stalling anything if Fribb is slow.
+  loadMap().catch(() => {});
 
   // Verify qBittorrent up front so failures are obvious, not mysterious.
   try {
