@@ -154,6 +154,13 @@ jobs:
           "$APP" --appimage-extract >/dev/null
           rm -f squashfs-root/.DirIcon
           cp "$GITHUB_WORKSPACE/desktop/src-tauri/icons/128x128.png" squashfs-root/.DirIcon
+          # --appimage-extract leaves the root and some dirs at 0700. The repacked
+          # image is root-owned, so kernel mounts (e.g. firejail --appimage) then
+          # can't enter it. Restore world-readable/traversable permissions.
+          chmod -R u+rwX,go+rX,go-w squashfs-root
+          if find squashfs-root -type d ! -perm -005 | grep -q .; then
+            echo "::error::Directories still not world-traversable"; exit 1
+          fi
           curl -fsSL -o appimagetool \
             https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
           chmod +x appimagetool
