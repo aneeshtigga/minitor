@@ -136,6 +136,36 @@ jobs:
           esac
           echo "Collected:"; ls -lh artifacts
 
+      # Tauri's AppImage ships without a .DirIcon at the AppDir root, which the
+      # AppImage spec (and the appimage.github.io catalog test) requires. Unpack
+      # it, add the icon, and repack under the same stable filename.
+      - name: Add .DirIcon to AppImage
+        if: matrix.platform == 'linux'
+        shell: bash
+        env:
+          APPIMAGE_EXTRACT_AND_RUN: '1'
+          ARCH: x86_64
+        run: |
+          set -euo pipefail
+          APP="$PWD/artifacts/Minitor-Linux-x86_64.AppImage"
+          WORK=$(mktemp -d)
+          cd "$WORK"
+          chmod +x "$APP"
+          "$APP" --appimage-extract >/dev/null
+          rm -f squashfs-root/.DirIcon
+          cp "$GITHUB_WORKSPACE/desktop/src-tauri/icons/128x128.png" squashfs-root/.DirIcon
+          curl -fsSL -o appimagetool \
+            https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
+          chmod +x appimagetool
+          ./appimagetool squashfs-root "$WORK/fixed.AppImage"
+          mv "$WORK/fixed.AppImage" "$APP"
+          chmod +x "$APP"
+          # Sanity check: the repacked image must contain .DirIcon.
+          mkdir verify && cd verify
+          "$APP" --appimage-extract .DirIcon >/dev/null
+          test -s squashfs-root/.DirIcon
+          echo ".DirIcon added:"; ls -lh "$APP"
+
       - name: Upload to Release
         uses: softprops/action-gh-release@v2
         with:
