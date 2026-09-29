@@ -1,6 +1,6 @@
 [package]
 name = "minitor-desktop"
-version = "0.6.5"
+version = "0.6.6"
 description = "Minitor desktop control panel"
 authors = ["aneeshtigga"]
 license = "GPL-3.0-or-later"
